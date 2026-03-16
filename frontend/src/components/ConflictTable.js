@@ -1,4 +1,4 @@
-import { Globe2 } from "lucide-react";
+import { Globe2, Users, Database } from "lucide-react";
 
 const ConflictTable = ({ conflicts }) => {
   return (
@@ -62,28 +62,78 @@ const ConflictTable = ({ conflicts }) => {
               </div>
             </div>
             
-            {/* Description and Countries */}
-            <div className="p-4 grid grid-cols-12 gap-4">
-              <div className="col-span-8">
-                <p className="text-xs uppercase tracking-wider font-mono text-zinc-500 mb-2">Description</p>
-                <p className="text-sm text-zinc-300 leading-relaxed">{conflict.description || 'No description available.'}</p>
+            {/* Description */}
+            <div className="p-4 border-b border-zinc-800">
+              <p className="text-xs uppercase tracking-wider font-mono text-zinc-500 mb-2">Description</p>
+              <p className="text-sm text-zinc-300 leading-relaxed">{conflict.description || 'No description available.'}</p>
+            </div>
+            
+            {/* Parties and Sources */}
+            <div className="p-4 grid grid-cols-2 gap-6">
+              {/* All Conflicting Parties */}
+              <div>
+                <p className="text-xs uppercase tracking-wider font-mono text-zinc-500 mb-3 flex items-center gap-2">
+                  <Users className="w-3 h-3" />
+                  All Conflicting Parties
+                </p>
+                <div className="space-y-2">
+                  {/* Countries */}
+                  {(conflict.countries_involved || []).length > 0 && (
+                    <div>
+                      <p className="text-xs text-zinc-600 font-mono mb-1">Countries:</p>
+                      <div className="flex flex-wrap gap-2">
+                        {conflict.countries_involved.map((country, idx) => (
+                          <span
+                            key={idx}
+                            className="inline-flex items-center gap-1 px-2 py-1 bg-red-950/30 border border-red-900/50 rounded-sm text-xs font-mono text-red-400"
+                          >
+                            <Globe2 className="w-3 h-3" />
+                            {country}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  
+                  {/* Armed Groups & Factions */}
+                  {(conflict.parties_involved || []).length > 0 && (
+                    <div>
+                      <p className="text-xs text-zinc-600 font-mono mb-1">Armed Groups & Factions:</p>
+                      <div className="flex flex-wrap gap-2">
+                        {conflict.parties_involved.map((party, idx) => (
+                          <span
+                            key={idx}
+                            className="inline-flex items-center gap-1 px-2 py-1 bg-zinc-800/50 border border-zinc-700 rounded-sm text-xs font-mono text-zinc-300"
+                          >
+                            {party}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
               
-              <div className="col-span-4">
-                <p className="text-xs uppercase tracking-wider font-mono text-zinc-500 mb-2 flex items-center gap-2">
-                  <Globe2 className="w-3 h-3" />
-                  Countries Involved
+              {/* Data Sources */}
+              <div>
+                <p className="text-xs uppercase tracking-wider font-mono text-zinc-500 mb-3 flex items-center gap-2">
+                  <Database className="w-3 h-3" />
+                  Data Sources
                 </p>
-                <div className="flex flex-wrap gap-2">
-                  {(conflict.countries_involved || []).map((country, idx) => (
-                    <span
-                      key={idx}
-                      className="inline-flex items-center gap-1 px-2 py-1 bg-zinc-800/50 border border-zinc-700 rounded-sm text-xs font-mono text-zinc-300"
-                    >
-                      <Globe2 className="w-3 h-3 text-red-500" />
-                      {country}
-                    </span>
-                  ))}
+                <div className="space-y-1">
+                  {(conflict.data_sources || []).length > 0 ? (
+                    conflict.data_sources.map((source, idx) => (
+                      <div
+                        key={idx}
+                        className="flex items-center gap-2 px-2 py-1 bg-blue-950/20 border border-blue-900/30 rounded-sm"
+                      >
+                        <Database className="w-3 h-3 text-blue-400" />
+                        <span className="text-xs font-mono text-blue-300">{source}</span>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="text-xs text-zinc-600 font-mono">No sources listed</p>
+                  )}
                 </div>
               </div>
             </div>

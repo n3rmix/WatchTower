@@ -63,6 +63,8 @@ class ConflictData(BaseModel):
     children_deaths: int
     description: str = ""
     countries_involved: List[str] = []
+    parties_involved: List[str] = []
+    data_sources: List[str] = []
     last_updated: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     status: str = "active"
 
@@ -145,6 +147,8 @@ async def scrape_conflict_data():
             'children_deaths': 580,
             'description': 'Ongoing military conflict between Russia and Ukraine since February 2022, involving large-scale conventional warfare, territorial disputes, and widespread civilian impact.',
             'countries_involved': ['Ukraine', 'Russia'],
+            'parties_involved': ['Ukrainian Armed Forces', 'Russian Armed Forces', 'Wagner Group', 'Ukrainian Territorial Defense', 'Donetsk People\'s Republic', 'Luhansk People\'s Republic'],
+            'data_sources': ['OHCHR', 'Ukraine MOD', 'Mediazona', 'BBC Russia'],
             'last_updated': datetime.now(timezone.utc).isoformat(),
             'status': 'active'
         },
@@ -158,6 +162,8 @@ async def scrape_conflict_data():
             'children_deaths': 16500,
             'description': 'Israeli-Palestinian conflict escalated in October 2023, resulting in extensive military operations in Gaza with severe humanitarian consequences and high civilian casualties.',
             'countries_involved': ['Palestine', 'Israel'],
+            'parties_involved': ['Israeli Defense Forces (IDF)', 'Hamas', 'Palestinian Islamic Jihad', 'Al-Qassam Brigades', 'Israeli Security Forces'],
+            'data_sources': ['Gaza Health Ministry', 'OCHA', 'B\'Tselem', 'PCHR'],
             'last_updated': datetime.now(timezone.utc).isoformat(),
             'status': 'active'
         },
@@ -171,6 +177,8 @@ async def scrape_conflict_data():
             'children_deaths': 4200,
             'description': 'Internal armed conflict between rival military factions (SAF and RSF) since April 2023, causing mass displacement and humanitarian crisis across multiple regions.',
             'countries_involved': ['Sudan'],
+            'parties_involved': ['Sudanese Armed Forces (SAF)', 'Rapid Support Forces (RSF)', 'Sudan Liberation Movement', 'Justice and Equality Movement'],
+            'data_sources': ['ACLED', 'Sudan Doctors Syndicate', 'WHO', 'OCHA Sudan'],
             'last_updated': datetime.now(timezone.utc).isoformat(),
             'status': 'active'
         },
@@ -184,6 +192,8 @@ async def scrape_conflict_data():
             'children_deaths': 980,
             'description': 'Civil conflict following 2021 military coup, with armed resistance groups fighting against military junta, resulting in widespread violence and displacement.',
             'countries_involved': ['Myanmar'],
+            'parties_involved': ['Myanmar Military (Tatmadaw)', 'People\'s Defense Forces (PDF)', 'Arakan Army', 'Karen National Union', 'Kachin Independence Army', 'National Unity Government'],
+            'data_sources': ['AAPP', 'UCDP', 'UN Human Rights Office', 'Myanmar Witness'],
             'last_updated': datetime.now(timezone.utc).isoformat(),
             'status': 'active'
         },
@@ -197,6 +207,8 @@ async def scrape_conflict_data():
             'children_deaths': 29500,
             'description': 'Multi-sided civil war since 2011 involving government forces, opposition groups, and international actors, creating one of the worst humanitarian crises of the century.',
             'countries_involved': ['Syria', 'Turkey', 'Russia', 'Iran', 'United States'],
+            'parties_involved': ['Syrian Government Forces', 'Syrian Democratic Forces (SDF)', 'Hayat Tahrir al-Sham (HTS)', 'Free Syrian Army', 'ISIS remnants', 'Turkish Armed Forces', 'Russian Forces', 'Iranian Forces', 'Hezbollah', 'US Coalition'],
+            'data_sources': ['Syrian Observatory for Human Rights', 'VDC', 'SNHR', 'WHO Syria'],
             'last_updated': datetime.now(timezone.utc).isoformat(),
             'status': 'ongoing'
         },
@@ -210,6 +222,8 @@ async def scrape_conflict_data():
             'children_deaths': 11500,
             'description': 'Civil war since 2014 between Houthi forces and government-allied coalition, involving Saudi Arabia and UAE, causing severe famine and disease outbreaks.',
             'countries_involved': ['Yemen', 'Saudi Arabia', 'UAE', 'Iran'],
+            'parties_involved': ['Houthi Movement (Ansar Allah)', 'Yemeni Government Forces', 'Saudi-led Coalition', 'Southern Transitional Council', 'Al-Qaeda in Arabian Peninsula', 'UAE Forces', 'Yemeni Armed Forces'],
+            'data_sources': ['ACLED', 'Yemen Data Project', 'OCHA Yemen', 'WHO Yemen'],
             'last_updated': datetime.now(timezone.utc).isoformat(),
             'status': 'ongoing'
         },
@@ -223,6 +237,8 @@ async def scrape_conflict_data():
             'children_deaths': 85000,
             'description': 'Tigray conflict (2020-2022) and ongoing ethnic tensions across regions, involving federal forces and regional militias, with massive civilian casualties and displacement.',
             'countries_involved': ['Ethiopia', 'Eritrea'],
+            'parties_involved': ['Ethiopian National Defense Force', 'Tigray Defense Forces', 'Eritrean Defense Forces', 'Amhara Regional Forces', 'Fano Militia', 'Oromo Liberation Army'],
+            'data_sources': ['ACLED', 'Ghent University Study', 'TGHAT', 'Amnesty International'],
             'last_updated': datetime.now(timezone.utc).isoformat(),
             'status': 'active'
         },
@@ -236,6 +252,8 @@ async def scrape_conflict_data():
             'children_deaths': 28000,
             'description': 'Eastern DRC insurgency involving multiple armed groups, resource conflicts, and cross-border violence with Rwanda and Uganda, creating persistent humanitarian emergency.',
             'countries_involved': ['DRC', 'Rwanda', 'Uganda'],
+            'parties_involved': ['FARDC (DRC Army)', 'M23 Movement', 'Allied Democratic Forces (ADF)', 'FDLR', 'Mai-Mai Militias', 'MONUSCO', 'Rwandan Defense Forces', 'Ugandan Forces'],
+            'data_sources': ['ACLED', 'Kivu Security Tracker', 'OCHA DRC', 'Congo Research Group'],
             'last_updated': datetime.now(timezone.utc).isoformat(),
             'status': 'active'
         },
@@ -249,6 +267,8 @@ async def scrape_conflict_data():
             'children_deaths': 320,
             'description': 'Internal civil unrest and government crackdowns following nationwide protests since 2022, regional proxy conflicts involvement, and tensions with opposition groups including Kurdish insurgencies.',
             'countries_involved': ['Iran'],
+            'parties_involved': ['Iranian Security Forces', 'IRGC', 'Basij Militia', 'Kurdish Democratic Party of Iran (KDPI)', 'Komala', 'Free Life Party of Kurdistan (PJAK)', 'Iranian Opposition Groups'],
+            'data_sources': ['Iran Human Rights (IHR)', 'Hengaw', 'Amnesty International', 'UN Human Rights'],
             'last_updated': datetime.now(timezone.utc).isoformat(),
             'status': 'active'
         }
