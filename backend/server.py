@@ -238,6 +238,19 @@ async def scrape_conflict_data():
             'countries_involved': ['DRC', 'Rwanda', 'Uganda'],
             'last_updated': datetime.now(timezone.utc).isoformat(),
             'status': 'active'
+        },
+        {
+            'id': str(uuid.uuid4()),
+            'country': 'Iran',
+            'region': 'Middle East',
+            'total_deaths': 2800,
+            'civilian_deaths': 2100,
+            'military_deaths': 700,
+            'children_deaths': 320,
+            'description': 'Internal civil unrest and government crackdowns following nationwide protests since 2022, regional proxy conflicts involvement, and tensions with opposition groups including Kurdish insurgencies.',
+            'countries_involved': ['Iran'],
+            'last_updated': datetime.now(timezone.utc).isoformat(),
+            'status': 'active'
         }
     ]
     
