@@ -143,58 +143,43 @@ All casualty statistics are sourced from verified international organizations an
 
 ## 🚀 Installation
 
+### Quick Start
+
+For detailed local deployment instructions including database setup, see **[LOCAL_DEPLOYMENT.md](LOCAL_DEPLOYMENT.md)**
+
 ### Prerequisites
 - Node.js 18+ and Yarn
 - Python 3.11+
 - MongoDB (local or cloud)
 
-### Backend Setup
+### Basic Setup
 
+**Backend:**
 ```bash
-# Navigate to backend directory
 cd backend
-
-# Install Python dependencies
 pip install -r requirements.txt
-
-# Configure environment variables
-cp .env.example .env
-# Edit .env with your MongoDB connection string
-
-# Run the server
+# Configure .env with MongoDB URL
 uvicorn server:app --reload --host 0.0.0.0 --port 8001
 ```
 
-### Frontend Setup
-
+**Frontend:**
 ```bash
-# Navigate to frontend directory
 cd frontend
-
-# Install dependencies
 yarn install
-
-# Configure environment variables
-cp .env.example .env
-# Edit .env with backend URL
-
-# Start development server
+# Configure .env with backend URL
 yarn start
 ```
 
-### Environment Variables
+**Database Options:**
+- Local MongoDB: `mongodb://localhost:27017`
+- MongoDB Atlas (Free): Cloud-hosted
+- Docker: `docker run -d -p 27017:27017 mongo:7.0`
 
-**Backend (.env)**
-```
-MONGO_URL=mongodb://localhost:27017
-DB_NAME=conflict_tracker
-CORS_ORIGINS=*
-```
-
-**Frontend (.env)**
-```
-REACT_APP_BACKEND_URL=http://localhost:8001
-```
+See **[LOCAL_DEPLOYMENT.md](LOCAL_DEPLOYMENT.md)** for complete setup instructions including:
+- MongoDB installation (macOS, Linux, Windows, Docker)
+- Database verification and management
+- Troubleshooting common issues
+- Development workflow
 
 ---
 
