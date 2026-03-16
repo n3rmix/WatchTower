@@ -40,7 +40,14 @@ RSS_FEEDS = [
     "https://warontherocks.com/feed",
     "https://www.cfr.org/rss/all",
     "https://www.rand.org/topics/international-affairs.xml",
-    "https://www.geopoliticalmonitor.com/feed"
+    "https://www.geopoliticalmonitor.com/feed",
+    "https://www.foreignaffairs.com/feeds/topics/geopolitics",
+    "https://foreignpolicy.com/feed",
+    "https://www.ft.com/geopolitics?format=rss",
+    "https://www.economist.com/topics/geopolitics/feed",
+    "https://www.chathamhouse.org/rss.xml",
+    "https://gefira.org/en/feed",
+    "https://geopoliticaleconomy.com/feed"
 ]
 
 # Models
@@ -54,6 +61,8 @@ class ConflictData(BaseModel):
     civilian_deaths: int
     military_deaths: int
     children_deaths: int
+    description: str = ""
+    countries_involved: List[str] = []
     last_updated: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     status: str = "active"
 
@@ -134,6 +143,8 @@ async def scrape_conflict_data():
             'civilian_deaths': 12500,
             'military_deaths': 172500,
             'children_deaths': 580,
+            'description': 'Ongoing military conflict between Russia and Ukraine since February 2022, involving large-scale conventional warfare, territorial disputes, and widespread civilian impact.',
+            'countries_involved': ['Ukraine', 'Russia'],
             'last_updated': datetime.now(timezone.utc).isoformat(),
             'status': 'active'
         },
@@ -145,6 +156,8 @@ async def scrape_conflict_data():
             'civilian_deaths': 42000,
             'military_deaths': 5000,
             'children_deaths': 16500,
+            'description': 'Israeli-Palestinian conflict escalated in October 2023, resulting in extensive military operations in Gaza with severe humanitarian consequences and high civilian casualties.',
+            'countries_involved': ['Palestine', 'Israel'],
             'last_updated': datetime.now(timezone.utc).isoformat(),
             'status': 'active'
         },
@@ -156,6 +169,8 @@ async def scrape_conflict_data():
             'civilian_deaths': 13500,
             'military_deaths': 1500,
             'children_deaths': 4200,
+            'description': 'Internal armed conflict between rival military factions (SAF and RSF) since April 2023, causing mass displacement and humanitarian crisis across multiple regions.',
+            'countries_involved': ['Sudan'],
             'last_updated': datetime.now(timezone.utc).isoformat(),
             'status': 'active'
         },
@@ -167,6 +182,8 @@ async def scrape_conflict_data():
             'civilian_deaths': 7200,
             'military_deaths': 1300,
             'children_deaths': 980,
+            'description': 'Civil conflict following 2021 military coup, with armed resistance groups fighting against military junta, resulting in widespread violence and displacement.',
+            'countries_involved': ['Myanmar'],
             'last_updated': datetime.now(timezone.utc).isoformat(),
             'status': 'active'
         },
@@ -178,6 +195,8 @@ async def scrape_conflict_data():
             'civilian_deaths': 350000,
             'military_deaths': 267000,
             'children_deaths': 29500,
+            'description': 'Multi-sided civil war since 2011 involving government forces, opposition groups, and international actors, creating one of the worst humanitarian crises of the century.',
+            'countries_involved': ['Syria', 'Turkey', 'Russia', 'Iran', 'United States'],
             'last_updated': datetime.now(timezone.utc).isoformat(),
             'status': 'ongoing'
         },
@@ -189,6 +208,8 @@ async def scrape_conflict_data():
             'civilian_deaths': 150000,
             'military_deaths': 227000,
             'children_deaths': 11500,
+            'description': 'Civil war since 2014 between Houthi forces and government-allied coalition, involving Saudi Arabia and UAE, causing severe famine and disease outbreaks.',
+            'countries_involved': ['Yemen', 'Saudi Arabia', 'UAE', 'Iran'],
             'last_updated': datetime.now(timezone.utc).isoformat(),
             'status': 'ongoing'
         },
@@ -200,6 +221,8 @@ async def scrape_conflict_data():
             'civilian_deaths': 450000,
             'military_deaths': 150000,
             'children_deaths': 85000,
+            'description': 'Tigray conflict (2020-2022) and ongoing ethnic tensions across regions, involving federal forces and regional militias, with massive civilian casualties and displacement.',
+            'countries_involved': ['Ethiopia', 'Eritrea'],
             'last_updated': datetime.now(timezone.utc).isoformat(),
             'status': 'active'
         },
@@ -211,6 +234,8 @@ async def scrape_conflict_data():
             'civilian_deaths': 95000,
             'military_deaths': 25000,
             'children_deaths': 28000,
+            'description': 'Eastern DRC insurgency involving multiple armed groups, resource conflicts, and cross-border violence with Rwanda and Uganda, creating persistent humanitarian emergency.',
+            'countries_involved': ['DRC', 'Rwanda', 'Uganda'],
             'last_updated': datetime.now(timezone.utc).isoformat(),
             'status': 'active'
         }
