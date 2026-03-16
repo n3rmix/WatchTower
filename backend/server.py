@@ -265,9 +265,9 @@ async def scrape_conflict_data():
             'civilian_deaths': 2100,
             'military_deaths': 700,
             'children_deaths': 320,
-            'description': 'Internal civil unrest and government crackdowns following nationwide protests since 2022, regional proxy conflicts involvement, and tensions with opposition groups including Kurdish insurgencies.',
-            'countries_involved': ['Iran'],
-            'parties_involved': ['Iranian Security Forces', 'IRGC', 'Basij Militia', 'Kurdish Democratic Party of Iran (KDPI)', 'Komala', 'Free Life Party of Kurdistan (PJAK)', 'Iranian Opposition Groups'],
+            'description': 'Internal civil unrest and government crackdowns following nationwide protests since 2022, shadow war with Israel involving targeted assassinations and sabotage operations, tensions with US including sanctions and regional proxy conflicts, and Kurdish insurgencies.',
+            'countries_involved': ['Iran', 'Israel', 'United States'],
+            'parties_involved': ['Iranian Security Forces', 'IRGC', 'Basij Militia', 'Kurdish Democratic Party of Iran (KDPI)', 'Komala', 'Free Life Party of Kurdistan (PJAK)', 'Iranian Opposition Groups', 'Mossad', 'Israeli Defense Forces', 'US Forces'],
             'data_sources': ['Iran Human Rights (IHR)', 'Hengaw', 'Amnesty International', 'UN Human Rights'],
             'last_updated': datetime.now(timezone.utc).isoformat(),
             'status': 'active'
