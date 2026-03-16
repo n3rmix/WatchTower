@@ -56,7 +56,7 @@ const Dashboard = () => {
   const countryData = conflicts.map(c => ({
     country: c.country,
     deaths: c.total_deaths
-  })).sort((a, b) => b.deaths - a.deaths).slice(0, 8);
+  })).sort((a, b) => b.deaths - a.deaths).slice(0, 9);
 
   if (loading) {
     return (
