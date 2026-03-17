@@ -1,14 +1,23 @@
-import { Globe, RefreshCw, Settings as SettingsIcon } from "lucide-react";
+import { Globe, RefreshCw, Settings as SettingsIcon, Clock, Database } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "./ui/button";
 
-const Header = ({ lastUpdate, onRefresh }) => {
+/** Format an ISO string or Date as "DD MMM YYYY HH:MM UTC" */
+function formatTimestamp(ts) {
+  if (!ts) return "—";
+  const d = ts instanceof Date ? ts : new Date(ts);
+  if (isNaN(d.getTime())) return "—";
+  return d.toUTCString().replace(/:\d{2} GMT$/, " UTC");
+}
+
+const Header = ({ lastUpdate, dataLastFetch, sourcesUsed = [], nextFetchIn, onRefresh }) => {
   const navigate = useNavigate();
 
   return (
     <header className="border-b border-zinc-800 bg-zinc-950/50 backdrop-blur-sm sticky top-0 z-50" data-testid="dashboard-header">
       <div className="container mx-auto px-4 py-4">
         <div className="flex items-center justify-between">
+          {/* Left: Logo + title */}
           <div className="flex items-center gap-4">
             <Globe className="w-8 h-8 text-red-500" />
             <div>
@@ -19,14 +28,43 @@ const Header = ({ lastUpdate, onRefresh }) => {
             </div>
           </div>
 
+          {/* Right: timestamps + buttons */}
           <div className="flex items-center gap-3">
-            <div className="text-right hidden md:block">
-              <p className="text-xs text-zinc-400 uppercase tracking-wider font-mono">Last Update</p>
-              <p className="text-xs text-zinc-500 font-mono" data-testid="last-update-time">
-                {lastUpdate.toLocaleTimeString()}
-              </p>
+            {/* Timestamp block — hidden on very small screens */}
+            <div className="hidden sm:block text-right space-y-1 border-r border-zinc-800 pr-3 mr-1">
+              {/* Source fetch timestamp */}
+              <div data-testid="source-last-update">
+                <p className="text-xs text-zinc-500 uppercase tracking-wider font-mono flex items-center justify-end gap-1">
+                  <Database className="w-3 h-3" />
+                  Sources updated
+                </p>
+                <p className="text-xs text-zinc-300 font-mono font-semibold" data-testid="source-update-time">
+                  {formatTimestamp(dataLastFetch)}
+                </p>
+                {sourcesUsed.length > 0 && (
+                  <p className="text-xs text-zinc-600 font-mono">
+                    {sourcesUsed.join(" · ")}
+                  </p>
+                )}
+                {nextFetchIn !== null && (
+                  <p className="text-xs text-zinc-600 font-mono">
+                    Next in {nextFetchIn} min
+                  </p>
+                )}
+              </div>
+
+              {/* Display-layer poll timestamp */}
+              <div data-testid="display-last-update">
+                <p className="text-xs text-zinc-500 uppercase tracking-wider font-mono flex items-center justify-end gap-1">
+                  <Clock className="w-3 h-3" />
+                  Display polled
+                </p>
+                <p className="text-xs text-zinc-500 font-mono" data-testid="last-update-time">
+                  {formatTimestamp(lastUpdate)}
+                </p>
+              </div>
             </div>
-            
+
             <Button
               onClick={onRefresh}
               variant="secondary"
