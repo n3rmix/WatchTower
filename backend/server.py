@@ -138,17 +138,27 @@ async def get_acled_credentials():
 
 
 async def fetch_ucdp_deaths_for_country(country_name: str, session: aiohttp.ClientSession) -> Optional[int]:
-    """Fetch cumulative battle deaths from the UCDP GED API for a single country."""
+    """Fetch cumulative battle deaths from the UCDP GED API for a single country, paginating through all results."""
     try:
         url = f"{UCDP_API_BASE}/gedbattle/{UCDP_VERSION}"
-        params = {"pagesize": 1000, "country": country_name}
-        async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=20)) as resp:
-            if resp.status == 200:
+        page_size = 1000
+        page = 1
+        total = 0
+        while True:
+            params = {"pagesize": page_size, "page": page, "country": country_name}
+            async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                if resp.status != 200:
+                    break
                 data = await resp.json()
                 results = data.get("Result", [])
-                total = sum(int(event.get("best_est", 0) or 0) for event in results)
-                logger.info(f"UCDP: {country_name} → {total} battle deaths ({len(results)} events)")
-                return total if total > 0 else None
+                if not results:
+                    break
+                total += sum(int(event.get("best_est", 0) or 0) for event in results)
+                if len(results) < page_size:
+                    break
+                page += 1
+        logger.info(f"UCDP: {country_name} → {total} battle deaths ({page} page(s))")
+        return total if total > 0 else None
     except Exception as e:
         logger.warning(f"UCDP fetch error for {country_name}: {e}")
     return None

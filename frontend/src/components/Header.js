@@ -1,4 +1,4 @@
-import { Globe, RefreshCw, Settings as SettingsIcon, Clock, Database } from "lucide-react";
+import { Globe, RefreshCw, Settings as SettingsIcon, Database, AlertTriangle } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "./ui/button";
 
@@ -10,8 +10,17 @@ function formatTimestamp(ts) {
   return d.toUTCString().replace(/:\d{2} GMT$/, " UTC");
 }
 
-const Header = ({ lastUpdate, dataLastFetch, sourcesUsed = [], nextFetchIn, onRefresh }) => {
+/** Returns true if the timestamp is more than 2 hours old (or missing). */
+function isStale(ts) {
+  if (!ts) return false;
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return false;
+  return Date.now() - d.getTime() > 2 * 60 * 60 * 1000;
+}
+
+const Header = ({ dataLastFetch, sourcesUsed = [], nextFetchIn, onRefresh }) => {
   const navigate = useNavigate();
+  const stale = isStale(dataLastFetch);
 
   return (
     <header className="border-b border-zinc-800 bg-zinc-950/50 backdrop-blur-sm sticky top-0 z-50" data-testid="dashboard-header">
@@ -31,8 +40,7 @@ const Header = ({ lastUpdate, dataLastFetch, sourcesUsed = [], nextFetchIn, onRe
           {/* Right: timestamps + buttons */}
           <div className="flex items-center gap-3">
             {/* Timestamp block — hidden on very small screens */}
-            <div className="hidden sm:block text-right space-y-1 border-r border-zinc-800 pr-3 mr-1">
-              {/* Source fetch timestamp */}
+            <div className="hidden sm:block text-right space-y-0.5 border-r border-zinc-800 pr-3 mr-1">
               <div data-testid="source-last-update">
                 <p className="text-xs text-zinc-500 uppercase tracking-wider font-mono flex items-center justify-end gap-1">
                   <Database className="w-3 h-3" />
@@ -48,21 +56,18 @@ const Header = ({ lastUpdate, dataLastFetch, sourcesUsed = [], nextFetchIn, onRe
                 )}
                 {nextFetchIn !== null && (
                   <p className="text-xs text-zinc-600 font-mono">
-                    Next in {nextFetchIn} min
+                    next in {nextFetchIn} min
                   </p>
                 )}
               </div>
 
-              {/* Display-layer poll timestamp */}
-              <div data-testid="display-last-update">
-                <p className="text-xs text-zinc-500 uppercase tracking-wider font-mono flex items-center justify-end gap-1">
-                  <Clock className="w-3 h-3" />
-                  Display polled
+              {/* Stale-data warning */}
+              {stale && (
+                <p className="flex items-center justify-end gap-1 text-xs font-mono text-amber-500 bg-amber-950/30 border border-amber-800/40 px-2 py-0.5 rounded-sm mt-1" data-testid="stale-warning">
+                  <AlertTriangle className="w-3 h-3" />
+                  Data may be stale
                 </p>
-                <p className="text-xs text-zinc-500 font-mono" data-testid="last-update-time">
-                  {formatTimestamp(lastUpdate)}
-                </p>
-              </div>
+              )}
             </div>
 
             <Button

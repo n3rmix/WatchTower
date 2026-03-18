@@ -34,7 +34,6 @@ const Dashboard = () => {
   const [news, setNews] = useState([]);
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [lastUpdate, setLastUpdate] = useState(new Date());
   const [dataLastFetch, setDataLastFetch] = useState(null);   // when sources were last queried
   const [sourcesUsed, setSourcesUsed] = useState([]);
   const [nextFetchIn, setNextFetchIn] = useState(null);       // minutes until next hourly fetch
@@ -51,7 +50,6 @@ const Dashboard = () => {
       setConflicts(conflictsRes.data);
       setNews(newsRes.data);
       setStats(statsRes.data);
-      setLastUpdate(new Date());
 
       const lu = lastUpdateRes.data;
       setDataLastFetch(lu.fetched_at || null);
@@ -96,7 +94,6 @@ const Dashboard = () => {
   return (
     <div className="min-h-screen bg-[#09090b] text-zinc-100" data-testid="dashboard-container">
       <Header
-        lastUpdate={lastUpdate}
         dataLastFetch={dataLastFetch}
         sourcesUsed={sourcesUsed}
         nextFetchIn={nextFetchIn}
