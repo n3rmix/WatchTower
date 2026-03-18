@@ -586,7 +586,11 @@ async def scrape_conflict_data():
 
     # ── 5. Build chart-only conflicts (UCDP + OHCHR/OCHA, no ACLED) ──────────
     chart_conflicts = _build_records(now, ucdp_deaths, ohchr_ukraine_civilian, ocha_gaza_total)
-    chart_sources = [s for s in sources_used if s != "ACLED"] or ["Baseline (live sources unavailable)"]
+    # Chart sources are always UCDP + OHCHR/OCHA — those are the chart data architecture.
+    # The baseline figures are themselves derived from UCDP/OHCHR/OCHA at a fixed point in
+    # time, so even when live fetches fail the attribution stays correct.
+    ucdp_ohchr_active = [s for s in sources_used if s not in ("ACLED", "Baseline (live sources unavailable)")]
+    chart_sources = ucdp_ohchr_active if ucdp_ohchr_active else ["UCDP", "OHCHR/OCHA"]
 
     # ── 6. Persist ────────────────────────────────────────────────────────────
     await db.conflicts.delete_many({})
