@@ -1,14 +1,32 @@
-import { Globe, RefreshCw, Settings as SettingsIcon } from "lucide-react";
+import { Globe, RefreshCw, Settings as SettingsIcon, Database, AlertTriangle } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "./ui/button";
 
-const Header = ({ lastUpdate, onRefresh }) => {
+/** Format an ISO string or Date as "DD MMM YYYY HH:MM UTC" */
+function formatTimestamp(ts) {
+  if (!ts) return "—";
+  const d = ts instanceof Date ? ts : new Date(ts);
+  if (isNaN(d.getTime())) return "—";
+  return d.toUTCString().replace(/:\d{2} GMT$/, " UTC");
+}
+
+/** Returns true if the timestamp is more than 2 hours old (or missing). */
+function isStale(ts) {
+  if (!ts) return false;
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return false;
+  return Date.now() - d.getTime() > 2 * 60 * 60 * 1000;
+}
+
+const Header = ({ dataLastFetch, sourcesUsed = [], nextFetchIn, onRefresh }) => {
   const navigate = useNavigate();
+  const stale = isStale(dataLastFetch);
 
   return (
     <header className="border-b border-zinc-800 bg-zinc-950/50 backdrop-blur-sm sticky top-0 z-50" data-testid="dashboard-header">
       <div className="container mx-auto px-4 py-4">
         <div className="flex items-center justify-between">
+          {/* Left: Logo + title */}
           <div className="flex items-center gap-4">
             <Globe className="w-8 h-8 text-red-500" />
             <div>
@@ -19,14 +37,39 @@ const Header = ({ lastUpdate, onRefresh }) => {
             </div>
           </div>
 
+          {/* Right: timestamps + buttons */}
           <div className="flex items-center gap-3">
-            <div className="text-right hidden md:block">
-              <p className="text-xs text-zinc-400 uppercase tracking-wider font-mono">Last Update</p>
-              <p className="text-xs text-zinc-500 font-mono" data-testid="last-update-time">
-                {lastUpdate.toLocaleTimeString()}
-              </p>
+            {/* Timestamp block — hidden on very small screens */}
+            <div className="hidden sm:block text-right space-y-0.5 border-r border-zinc-800 pr-3 mr-1">
+              <div data-testid="source-last-update">
+                <p className="text-xs text-zinc-500 uppercase tracking-wider font-mono flex items-center justify-end gap-1">
+                  <Database className="w-3 h-3" />
+                  Sources updated
+                </p>
+                <p className="text-xs text-zinc-300 font-mono font-semibold" data-testid="source-update-time">
+                  {formatTimestamp(dataLastFetch)}
+                </p>
+                {sourcesUsed.length > 0 && (
+                  <p className="text-xs text-zinc-600 font-mono">
+                    {sourcesUsed.join(" · ")}
+                  </p>
+                )}
+                {nextFetchIn !== null && (
+                  <p className="text-xs text-zinc-600 font-mono">
+                    next in {nextFetchIn} min
+                  </p>
+                )}
+              </div>
+
+              {/* Stale-data warning */}
+              {stale && (
+                <p className="flex items-center justify-end gap-1 text-xs font-mono text-amber-500 bg-amber-950/30 border border-amber-800/40 px-2 py-0.5 rounded-sm mt-1" data-testid="stale-warning">
+                  <AlertTriangle className="w-3 h-3" />
+                  Data may be stale
+                </p>
+              )}
             </div>
-            
+
             <Button
               onClick={onRefresh}
               variant="secondary"

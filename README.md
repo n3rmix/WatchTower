@@ -19,7 +19,7 @@ A comprehensive, data-driven platform for tracking ongoing global conflicts, cas
 
 Project WATCHTOWER is a real-time conflict monitoring system that aggregates casualty data, armed group information, and geopolitical news from credible international sources. The platform provides transparent, data-backed insights into 9 major global conflicts affecting millions of people worldwide.
 
-**Total Tracked:** 1.97M deaths across 9 active conflicts | 60+ news sources | Auto-refresh every 5 minutes
+**Total Tracked:** 1.97M deaths across 9 active conflicts | 60+ news sources | Live data from ACLED · UCDP · OHCHR/OCHA — refreshed every hour
 
 ---
 
@@ -48,15 +48,21 @@ Project WATCHTOWER is a real-time conflict monitoring system that aggregates cas
   - Auto-scrolling marquee with clickable links
   - RSS feeds from Foreign Affairs, Foreign Policy, FT, The Economist, and more
 
-- **Auto-Refresh Mechanism**
-  - Background data updates every 5 minutes
-  - APScheduler-based task scheduling
-  - Manual refresh option available
+- **Hourly Live Data Refresh**
+  - Casualty figures pulled from primary sources every hour via APScheduler
+  - Source priority: **ACLED API** (when configured) → **UCDP GED API** (free, no key) → **OHCHR/OCHA scraping** (Ukraine civilian & Gaza totals) → baseline fallback
+  - Civilian/military/children figures scaled proportionally from live totals
+  - Manual refresh available on demand
 
-- **API Key Configuration**
-  - User-configurable API keys for future integrations
-  - Secure storage with masked display
-  - Settings page for credential management
+- **Visible Update Timestamps & Source Attribution**
+  - Header shows "Sources updated" date+time (UTC), active source names, countdown to next fetch, and an amber "Data may be stale" badge if the last fetch is >2 hours old
+  - Each chart shows a timestamp plus source pills (e.g. `UCDP` · `OHCHR/OCHA`) directly below the title
+  - Every conflict row in the detail table lists its individual data sources
+
+- **ACLED Credentials Management**
+  - Dedicated Settings section for ACLED email + API key
+  - `CONFIGURED` badge when credentials are stored
+  - Falls back gracefully to UCDP when no ACLED key is present
 
 ---
 
@@ -64,9 +70,9 @@ Project WATCHTOWER is a real-time conflict monitoring system that aggregates cas
 
 | Conflict | Region | Total Deaths | Civilian | Military | Children | Status |
 |----------|--------|--------------|----------|----------|----------|--------|
-| **Syria** | Middle East | 617,000 | 350,000 | 267,000 | 29,500 | Ongoing |
+| **Syria** | Middle East | 617,000 | 350,000 | 267,000 | 29,500 | Active |
 | **Ethiopia** | Africa | 600,000 | 450,000 | 150,000 | 85,000 | Active |
-| **Yemen** | Middle East | 377,000 | 150,000 | 227,000 | 11,500 | Ongoing |
+| **Yemen** | Middle East | 377,000 | 150,000 | 227,000 | 11,500 | Active |
 | **Ukraine** | Eastern Europe | 185,000 | 12,500 | 172,500 | 580 | Active |
 | **DRC** | Africa | 120,000 | 95,000 | 25,000 | 28,000 | Active |
 | **Gaza/Palestine** | Middle East | 47,000 | 42,000 | 5,000 | 16,500 | Active |
@@ -88,12 +94,13 @@ Project WATCHTOWER is a real-time conflict monitoring system that aggregates cas
 
 All casualty statistics are sourced from verified international organizations and monitoring groups:
 
-### Primary Sources
-- **ACLED** - Armed Conflict Location & Event Data Project
-- **UCDP** - Uppsala Conflict Data Program
-- **OHCHR** - UN Office of the High Commissioner for Human Rights
+### Primary Sources (queried every hour)
+- **ACLED** - Armed Conflict Location & Event Data Project *(requires free API key — configure in Settings)*
+- **UCDP GED** - Uppsala Conflict Data Program Georeferenced Event Dataset *(free, no key required)*
+- **OHCHR** - UN Office of the High Commissioner for Human Rights *(Ukraine civilian casualties — scraped)*
+- **OCHA oPt** - UN Office for the Coordination of Humanitarian Affairs *(Gaza totals — scraped)*
 - **WHO** - World Health Organization
-- **OCHA** - UN Office for the Coordination of Humanitarian Affairs
+- **Baseline** - Curated fallback figures used when all live sources are unavailable
 
 ### Regional Sources
 - Syrian Observatory for Human Rights, VDC, SNHR
@@ -228,7 +235,7 @@ Returns aggregated news articles from RSS feeds.
 ```
 
 #### `GET /api/stats`
-Returns aggregated global statistics.
+Returns aggregated global statistics, including the last live-source fetch time.
 
 **Response:**
 ```json
@@ -238,15 +245,29 @@ Returns aggregated global statistics.
   "military_deaths": 850000,
   "children_deaths": 176580,
   "active_conflicts": 7,
-  "total_conflicts": 9
+  "total_conflicts": 9,
+  "last_fetch_at": "2026-03-17T14:00:00+00:00",
+  "sources": ["ACLED", "UCDP", "OHCHR/OCHA"]
+}
+```
+
+#### `GET /api/last-update`
+Returns metadata about the most recent live-source data fetch.
+
+**Response:**
+```json
+{
+  "fetched_at": "2026-03-17T14:00:00+00:00",
+  "sources": ["ACLED", "UCDP", "OHCHR/OCHA"],
+  "next_fetch_in_minutes": 47
 }
 ```
 
 #### `POST /api/refresh`
-Manually triggers data refresh.
+Manually triggers an immediate data refresh from all primary sources.
 
 #### `POST /api/settings/api-keys`
-Saves API key configuration.
+Saves an API key. Use `service_name: "ACLED"` for the ACLED API key and `service_name: "ACLED_EMAIL"` for the associated account email.
 
 **Request:**
 ```json
@@ -279,18 +300,26 @@ Project WATCHTOWER follows a **situation room aesthetic** inspired by military c
 ## 🔄 Data Refresh Cycle
 
 ```
-Startup → Initial data fetch
+Startup → Initial data fetch from primary sources
     ↓
-Every 5 minutes:
-    ├─ Fetch RSS feeds (12 sources)
-    ├─ Parse conflict data
-    ├─ Update MongoDB
-    └─ Log status
-    ↓
-Frontend polls every 5 min
-    ├─ Refresh statistics
-    ├─ Update conflict table
-    └─ Reload news ticker
+Every hour (APScheduler):
+    ├─ Query ACLED API (if credentials stored in Settings)
+    │     └─ Total fatalities per country
+    ├─ Query UCDP GED API (free, no key)
+    │     └─ Battle deaths per country — fallback when no ACLED key
+    ├─ Scrape OHCHR (Ukraine civilian death count)
+    ├─ Scrape OCHA oPt (Gaza total death count)
+    ├─ Fetch RSS feeds (12 sources, ~120 articles)
+    ├─ Merge live numbers into conflict records
+    │     └─ Proportionally scale civilian/military/children figures
+    ├─ Persist to MongoDB
+    └─ Store fetch timestamp + sources used in system_metadata
+
+Frontend polls every 5 min:
+    ├─ GET /api/conflicts  → refresh conflict table & charts
+    ├─ GET /api/stats      → refresh KPI cards
+    ├─ GET /api/news       → reload news ticker
+    └─ GET /api/last-update → update header & chart timestamps
 ```
 
 ---
@@ -300,7 +329,7 @@ Frontend polls every 5 min
 Contributions are welcome! Areas for improvement:
 
 ### High Priority
-- [ ] Integrate live data APIs (ACLED, UCDP GED)
+- [x] Integrate live data APIs (ACLED, UCDP GED, OHCHR/OCHA)
 - [ ] Add historical trend charts
 - [ ] Implement world map visualization
 - [ ] Add conflict timeline view

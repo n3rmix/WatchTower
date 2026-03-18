@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import axios from "axios";
-import { Globe, Skull, Target, AlertTriangle, Users, Baby, Activity } from "lucide-react";
+import { Globe, Skull, Target, AlertTriangle, Users, Baby, Activity, Clock } from "lucide-react";
 import Marquee from "react-fast-marquee";
 import { BarChart, Bar, PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend, XAxis, YAxis } from "recharts";
 import Header from "../components/Header";
@@ -11,25 +11,63 @@ import ConflictTable from "../components/ConflictTable";
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
+/** Format an ISO timestamp string (or Date) as "DD MMM YYYY HH:MM UTC" */
+function formatTimestamp(ts) {
+  if (!ts) return "—";
+  const d = ts instanceof Date ? ts : new Date(ts);
+  if (isNaN(d.getTime())) return "—";
+  return d.toUTCString().replace(/:\d{2} GMT$/, " UTC");
+}
+
+const ChartTimestamp = ({ fetchedAt, sources = [] }) => {
+  if (!fetchedAt) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-xs font-mono text-zinc-600 mt-1 mb-3">
+      <span className="flex items-center gap-1">
+        <Clock className="w-3 h-3" />
+        {formatTimestamp(fetchedAt)}
+      </span>
+      {sources.length > 0 && (
+        <>
+          <span className="text-zinc-800">·</span>
+          {sources.map((s) => (
+            <span key={s} className="px-1.5 py-0.5 bg-zinc-800/60 border border-zinc-700 rounded-sm text-zinc-500 text-[10px] uppercase tracking-wide">
+              {s}
+            </span>
+          ))}
+        </>
+      )}
+    </div>
+  );
+};
+
 const Dashboard = () => {
   const [conflicts, setConflicts] = useState([]);
   const [news, setNews] = useState([]);
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [lastUpdate, setLastUpdate] = useState(new Date());
+  const [dataLastFetch, setDataLastFetch] = useState(null);   // when sources were last queried
+  const [sourcesUsed, setSourcesUsed] = useState([]);
+  const [nextFetchIn, setNextFetchIn] = useState(null);       // minutes until next hourly fetch
 
   const fetchData = async () => {
     try {
-      const [conflictsRes, newsRes, statsRes] = await Promise.all([
+      const [conflictsRes, newsRes, statsRes, lastUpdateRes] = await Promise.all([
         axios.get(`${API}/conflicts`),
         axios.get(`${API}/news`),
-        axios.get(`${API}/stats`)
+        axios.get(`${API}/stats`),
+        axios.get(`${API}/last-update`),
       ]);
-      
+
       setConflicts(conflictsRes.data);
       setNews(newsRes.data);
       setStats(statsRes.data);
-      setLastUpdate(new Date());
+
+      const lu = lastUpdateRes.data;
+      setDataLastFetch(lu.fetched_at || null);
+      setSourcesUsed(lu.sources || []);
+      setNextFetchIn(lu.next_fetch_in_minutes ?? null);
+
       setLoading(false);
     } catch (error) {
       console.error("Error fetching data:", error);
@@ -39,12 +77,8 @@ const Dashboard = () => {
 
   useEffect(() => {
     fetchData();
-    
-    // Auto-refresh every 5 minutes
-    const interval = setInterval(() => {
-      fetchData();
-    }, 5 * 60 * 1000);
-    
+    // Frontend re-polls the API every 5 minutes to pick up the hourly backend refresh
+    const interval = setInterval(fetchData, 5 * 60 * 1000);
     return () => clearInterval(interval);
   }, []);
 
@@ -71,8 +105,13 @@ const Dashboard = () => {
 
   return (
     <div className="min-h-screen bg-[#09090b] text-zinc-100" data-testid="dashboard-container">
-      <Header lastUpdate={lastUpdate} onRefresh={fetchData} />
-      
+      <Header
+        dataLastFetch={dataLastFetch}
+        sourcesUsed={sourcesUsed}
+        nextFetchIn={nextFetchIn}
+        onRefresh={fetchData}
+      />
+
       <main className="container mx-auto px-4 py-6 relative z-10">
         {/* Global Statistics */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-2 md:gap-4 mb-6" data-testid="stats-grid">
@@ -127,9 +166,10 @@ const Dashboard = () => {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
           {/* Civilian vs Military Chart */}
           <div className="tactical-card p-6 corner-accent" data-testid="casualty-breakdown-chart">
-            <h3 className="text-xl font-semibold uppercase tracking-tight mb-4 heading-tactical text-zinc-300">
+            <h3 className="text-xl font-semibold uppercase tracking-tight heading-tactical text-zinc-300">
               Casualty Breakdown
             </h3>
+            <ChartTimestamp fetchedAt={dataLastFetch} sources={sourcesUsed} />
             <ResponsiveContainer width="100%" height={300}>
               <PieChart>
                 <Pie
@@ -168,9 +208,10 @@ const Dashboard = () => {
 
           {/* Deaths by Country Chart */}
           <div className="tactical-card p-6 corner-accent" data-testid="deaths-by-country-chart">
-            <h3 className="text-xl font-semibold uppercase tracking-tight mb-4 heading-tactical text-zinc-300">
+            <h3 className="text-xl font-semibold uppercase tracking-tight heading-tactical text-zinc-300">
               Deaths by Country
             </h3>
+            <ChartTimestamp fetchedAt={dataLastFetch} sources={sourcesUsed} />
             <ResponsiveContainer width="100%" height={300}>
               <BarChart data={countryData}>
                 <XAxis
@@ -201,7 +242,7 @@ const Dashboard = () => {
         </div>
 
         {/* Conflicts Table */}
-        <ConflictTable conflicts={conflicts} />
+        <ConflictTable conflicts={conflicts} dataLastFetch={dataLastFetch} />
       </main>
 
       {/* News Ticker */}
