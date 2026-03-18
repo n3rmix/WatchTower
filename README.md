@@ -54,10 +54,10 @@ Project WATCHTOWER is a real-time conflict monitoring system that aggregates cas
   - Civilian/military/children figures scaled proportionally from live totals
   - Manual refresh available on demand
 
-- **Visible Update Timestamps**
-  - Header shows "Sources updated" date+time (UTC), active source names, and countdown to next fetch
-  - Each chart section shows its own "Source data: …" timestamp
-  - Every conflict row in the detail table shows its individual `last_updated` timestamp
+- **Visible Update Timestamps & Source Attribution**
+  - Header shows "Sources updated" date+time (UTC), active source names, countdown to next fetch, and an amber "Data may be stale" badge if the last fetch is >2 hours old
+  - Each chart shows a timestamp plus source pills (e.g. `UCDP` · `OHCHR/OCHA`) directly below the title
+  - Every conflict row in the detail table lists its individual data sources
 
 - **ACLED Credentials Management**
   - Dedicated Settings section for ACLED email + API key
@@ -70,9 +70,9 @@ Project WATCHTOWER is a real-time conflict monitoring system that aggregates cas
 
 | Conflict | Region | Total Deaths | Civilian | Military | Children | Status |
 |----------|--------|--------------|----------|----------|----------|--------|
-| **Syria** | Middle East | 617,000 | 350,000 | 267,000 | 29,500 | Ongoing |
+| **Syria** | Middle East | 617,000 | 350,000 | 267,000 | 29,500 | Active |
 | **Ethiopia** | Africa | 600,000 | 450,000 | 150,000 | 85,000 | Active |
-| **Yemen** | Middle East | 377,000 | 150,000 | 227,000 | 11,500 | Ongoing |
+| **Yemen** | Middle East | 377,000 | 150,000 | 227,000 | 11,500 | Active |
 | **Ukraine** | Eastern Europe | 185,000 | 12,500 | 172,500 | 580 | Active |
 | **DRC** | Africa | 120,000 | 95,000 | 25,000 | 28,000 | Active |
 | **Gaza/Palestine** | Middle East | 47,000 | 42,000 | 5,000 | 16,500 | Active |

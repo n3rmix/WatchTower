@@ -77,13 +77,9 @@ const ConflictTable = ({ conflicts, dataLastFetch }) => {
                 </div>
 
                 <div className="col-span-1 flex items-center justify-end">
-                  <span className={`inline-flex items-center gap-1 text-xs font-mono uppercase px-2 py-1 rounded-sm ${
-                    conflict.status === 'active'
-                      ? 'bg-red-950/50 text-red-500 border border-red-900'
-                      : 'bg-zinc-800/50 text-zinc-400 border border-zinc-700'
-                  }`}>
-                    {conflict.status === 'active' && <span className="w-1.5 h-1.5 bg-red-500 rounded-full blink-animation"></span>}
-                    {conflict.status}
+                  <span className="inline-flex items-center gap-1 text-xs font-mono uppercase px-2 py-1 rounded-sm bg-red-950/50 text-red-500 border border-red-900">
+                    <span className="w-1.5 h-1.5 bg-red-500 rounded-full blink-animation"></span>
+                    active
                   </span>
                 </div>
               </div>

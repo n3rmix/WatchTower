@@ -19,13 +19,25 @@ function formatTimestamp(ts) {
   return d.toUTCString().replace(/:\d{2} GMT$/, " UTC");
 }
 
-const ChartTimestamp = ({ fetchedAt }) => {
+const ChartTimestamp = ({ fetchedAt, sources = [] }) => {
   if (!fetchedAt) return null;
   return (
-    <p className="flex items-center gap-1 text-xs font-mono text-zinc-600 mt-1 mb-3">
-      <Clock className="w-3 h-3" />
-      <span>Source data: {formatTimestamp(fetchedAt)}</span>
-    </p>
+    <div className="flex flex-wrap items-center gap-2 text-xs font-mono text-zinc-600 mt-1 mb-3">
+      <span className="flex items-center gap-1">
+        <Clock className="w-3 h-3" />
+        {formatTimestamp(fetchedAt)}
+      </span>
+      {sources.length > 0 && (
+        <>
+          <span className="text-zinc-800">·</span>
+          {sources.map((s) => (
+            <span key={s} className="px-1.5 py-0.5 bg-zinc-800/60 border border-zinc-700 rounded-sm text-zinc-500 text-[10px] uppercase tracking-wide">
+              {s}
+            </span>
+          ))}
+        </>
+      )}
+    </div>
   );
 };
 
@@ -157,7 +169,7 @@ const Dashboard = () => {
             <h3 className="text-xl font-semibold uppercase tracking-tight heading-tactical text-zinc-300">
               Casualty Breakdown
             </h3>
-            <ChartTimestamp fetchedAt={dataLastFetch} />
+            <ChartTimestamp fetchedAt={dataLastFetch} sources={sourcesUsed} />
             <ResponsiveContainer width="100%" height={300}>
               <PieChart>
                 <Pie
@@ -199,7 +211,7 @@ const Dashboard = () => {
             <h3 className="text-xl font-semibold uppercase tracking-tight heading-tactical text-zinc-300">
               Deaths by Country
             </h3>
-            <ChartTimestamp fetchedAt={dataLastFetch} />
+            <ChartTimestamp fetchedAt={dataLastFetch} sources={sourcesUsed} />
             <ResponsiveContainer width="100%" height={300}>
               <BarChart data={countryData}>
                 <XAxis

@@ -416,7 +416,7 @@ BASELINE_CONFLICTS = [
         'countries_involved': ['Syria', 'Turkey', 'Russia', 'Iran', 'United States'],
         'parties_involved': ['Syrian Government Forces', 'Syrian Democratic Forces (SDF)', 'Hayat Tahrir al-Sham (HTS)', 'Free Syrian Army', 'ISIS remnants', 'Turkish Armed Forces', 'Russian Forces', 'Iranian Forces', 'Hezbollah', 'US Coalition'],
         'data_sources': ['Syrian Observatory for Human Rights', 'VDC', 'SNHR', 'WHO Syria'],
-        'status': 'ongoing'
+        'status': 'active'
     },
     {
         'country': 'Yemen',
@@ -429,7 +429,7 @@ BASELINE_CONFLICTS = [
         'countries_involved': ['Yemen', 'Saudi Arabia', 'UAE', 'Iran'],
         'parties_involved': ['Houthi Movement (Ansar Allah)', 'Yemeni Government Forces', 'Saudi-led Coalition', 'Southern Transitional Council', 'Al-Qaeda in Arabian Peninsula', 'UAE Forces', 'Yemeni Armed Forces'],
         'data_sources': ['ACLED', 'Yemen Data Project', 'OCHA Yemen', 'WHO Yemen'],
-        'status': 'ongoing'
+        'status': 'active'
     },
     {
         'country': 'Ethiopia',
