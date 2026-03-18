@@ -296,7 +296,7 @@ async def scrape_ocha_gaza_deaths() -> Optional[int]:
     return None
 
 
-async def update_last_fetch_metadata(sources_used: List[str]):
+async def update_last_fetch_metadata(sources_used: List[str], chart_sources: Optional[List[str]] = None):
     """Store the timestamp of the most recent successful live data fetch."""
     now = datetime.now(timezone.utc)
     await db.system_metadata.update_one(
@@ -305,6 +305,7 @@ async def update_last_fetch_metadata(sources_used: List[str]):
             "key": "last_fetch",
             "fetched_at": now.isoformat(),
             "sources": sources_used,
+            "chart_sources": chart_sources if chart_sources is not None else sources_used,
         }},
         upsert=True,
     )
@@ -473,10 +474,70 @@ BASELINE_CONFLICTS = [
 ]
 
 
+def _build_records(
+    now: datetime,
+    primary_deaths: Dict[str, int],
+    ohchr_ukraine_civilian: Optional[int],
+    ocha_gaza_total: Optional[int],
+) -> list:
+    """
+    Merge live death figures into baseline conflict records.
+    primary_deaths: dict of country -> total deaths from the desired source(s).
+    """
+    conflicts = []
+    for base in BASELINE_CONFLICTS:
+        record = dict(base)
+        country = record['country']
+        record['id'] = str(uuid.uuid4())
+        record['last_updated'] = now.isoformat()
+
+        live_total: Optional[int] = primary_deaths.get(country)
+
+        if live_total is not None:
+            old_total = record['total_deaths']
+            if old_total > 0:
+                civ_ratio = record['civilian_deaths'] / old_total
+                mil_ratio = record['military_deaths'] / old_total
+                child_ratio = record['children_deaths'] / old_total
+                record['total_deaths'] = live_total
+                record['civilian_deaths'] = int(live_total * civ_ratio)
+                record['military_deaths'] = int(live_total * mil_ratio)
+                record['children_deaths'] = int(live_total * child_ratio)
+            else:
+                record['total_deaths'] = live_total
+
+        # Override Ukraine civilian deaths with OHCHR figure if available
+        if country == 'Ukraine' and isinstance(ohchr_ukraine_civilian, int):
+            record['civilian_deaths'] = ohchr_ukraine_civilian
+            if ohchr_ukraine_civilian > record['civilian_deaths']:
+                record['total_deaths'] = max(record['total_deaths'],
+                                             ohchr_ukraine_civilian + record['military_deaths'])
+
+        # Override Gaza total deaths with OCHA figure if available
+        if country == 'Gaza/Palestine' and isinstance(ocha_gaza_total, int):
+            old_total = record['total_deaths']
+            record['total_deaths'] = ocha_gaza_total
+            if old_total > 0:
+                civ_ratio = record['civilian_deaths'] / old_total
+                mil_ratio = record['military_deaths'] / old_total
+                child_ratio = record['children_deaths'] / old_total
+                record['civilian_deaths'] = int(ocha_gaza_total * civ_ratio)
+                record['military_deaths'] = int(ocha_gaza_total * mil_ratio)
+                record['children_deaths'] = int(ocha_gaza_total * child_ratio)
+
+        conflicts.append(record)
+    return conflicts
+
+
 async def scrape_conflict_data():
     """
     Build conflict records by querying live primary sources (ACLED, UCDP, OHCHR/OCHA).
     Falls back gracefully to baseline figures when live sources are unavailable.
+
+    Two parallel datasets are produced:
+      - conflicts       (ACLED > UCDP priority) — used by the table and stat cards
+      - chart_conflicts (UCDP + OHCHR/OCHA only) — used by Casualty Breakdown and
+                         Deaths by Country charts
     """
     now = datetime.now(timezone.utc)
     sources_used: List[str] = []
@@ -519,60 +580,25 @@ async def scrape_conflict_data():
         sources_used.append("Baseline (live sources unavailable)")
         logger.warning("All live sources failed — using baseline conflict data")
 
-    # ── 4. Merge live numbers into conflict records ──────────────────────────
-    conflicts = []
-    for base in BASELINE_CONFLICTS:
-        record = dict(base)
-        country = record['country']
-        record['id'] = str(uuid.uuid4())
-        record['last_updated'] = now.isoformat()
+    # ── 4. Build main conflicts (ACLED > UCDP priority) ──────────────────────
+    acled_or_ucdp: Dict[str, int] = {**ucdp_deaths, **acled_deaths}  # ACLED wins on overlap
+    conflicts = _build_records(now, acled_or_ucdp, ohchr_ukraine_civilian, ocha_gaza_total)
 
-        # Determine best total deaths figure
-        # Priority: ACLED > UCDP > baseline
-        live_total: Optional[int] = acled_deaths.get(country) or ucdp_deaths.get(country)
+    # ── 5. Build chart-only conflicts (UCDP + OHCHR/OCHA, no ACLED) ──────────
+    chart_conflicts = _build_records(now, ucdp_deaths, ohchr_ukraine_civilian, ocha_gaza_total)
+    chart_sources = [s for s in sources_used if s != "ACLED"] or ["Baseline (live sources unavailable)"]
 
-        if live_total is not None:
-            old_total = record['total_deaths']
-            # Scale civilian/military proportionally from the live total
-            if old_total > 0:
-                civ_ratio = record['civilian_deaths'] / old_total
-                mil_ratio = record['military_deaths'] / old_total
-                child_ratio = record['children_deaths'] / old_total
-                record['total_deaths'] = live_total
-                record['civilian_deaths'] = int(live_total * civ_ratio)
-                record['military_deaths'] = int(live_total * mil_ratio)
-                record['children_deaths'] = int(live_total * child_ratio)
-            else:
-                record['total_deaths'] = live_total
-
-        # Override Ukraine civilian deaths with OHCHR figure if available
-        if country == 'Ukraine' and isinstance(ohchr_ukraine_civilian, int):
-            record['civilian_deaths'] = ohchr_ukraine_civilian
-            # Recalculate total if OHCHR civilian > current civilian
-            if ohchr_ukraine_civilian > record['civilian_deaths']:
-                record['total_deaths'] = max(record['total_deaths'],
-                                             ohchr_ukraine_civilian + record['military_deaths'])
-
-        # Override Gaza total deaths with OCHA figure if available
-        if country == 'Gaza/Palestine' and isinstance(ocha_gaza_total, int):
-            old_total = record['total_deaths']
-            record['total_deaths'] = ocha_gaza_total
-            if old_total > 0:
-                civ_ratio = record['civilian_deaths'] / old_total
-                mil_ratio = record['military_deaths'] / old_total
-                child_ratio = record['children_deaths'] / old_total
-                record['civilian_deaths'] = int(ocha_gaza_total * civ_ratio)
-                record['military_deaths'] = int(ocha_gaza_total * mil_ratio)
-                record['children_deaths'] = int(ocha_gaza_total * child_ratio)
-
-        conflicts.append(record)
-
-    # ── 5. Persist ────────────────────────────────────────────────────────────
+    # ── 6. Persist ────────────────────────────────────────────────────────────
     await db.conflicts.delete_many({})
     await db.conflicts.insert_many(conflicts)
-    logger.info(f"Stored {len(conflicts)} conflict records (sources: {', '.join(sources_used)})")
 
-    await update_last_fetch_metadata(sources_used)
+    await db.chart_conflicts.delete_many({})
+    await db.chart_conflicts.insert_many(chart_conflicts)
+
+    logger.info(f"Stored {len(conflicts)} conflict records (sources: {', '.join(sources_used)})")
+    logger.info(f"Stored {len(chart_conflicts)} chart-only records (sources: {', '.join(chart_sources)})")
+
+    await update_last_fetch_metadata(sources_used, chart_sources)
     return conflicts
 
 
@@ -644,6 +670,7 @@ async def get_last_update():
     return {
         "fetched_at": fetched_at_str,
         "sources": meta.get("sources", []),
+        "chart_sources": meta.get("chart_sources", meta.get("sources", [])),
         "next_fetch_in_minutes": next_fetch_in_minutes,
     }
 
@@ -695,6 +722,40 @@ async def get_stats():
         "total_conflicts": len(conflicts),
         "last_fetch_at": meta.get("fetched_at") if meta else None,
         "sources": meta.get("sources", []) if meta else [],
+    }
+
+
+@api_router.get("/chart-conflicts", response_model=List[ConflictData])
+async def get_chart_conflicts():
+    """Get conflict data built from UCDP + OHCHR/OCHA only (used by charts)."""
+    conflicts = await db.chart_conflicts.find({}, {"_id": 0}).to_list(1000)
+    for conflict in conflicts:
+        if isinstance(conflict.get('last_updated'), str):
+            conflict['last_updated'] = datetime.fromisoformat(conflict['last_updated'])
+    return conflicts
+
+
+@api_router.get("/chart-stats")
+async def get_chart_stats():
+    """Aggregated casualty stats from UCDP + OHCHR/OCHA data only (used by charts)."""
+    conflicts = await db.chart_conflicts.find({}, {"_id": 0}).to_list(1000)
+    meta = await db.system_metadata.find_one({"key": "last_fetch"}, {"_id": 0})
+
+    total_deaths = sum(c.get('total_deaths', 0) for c in conflicts)
+    total_civilian = sum(c.get('civilian_deaths', 0) for c in conflicts)
+    total_military = sum(c.get('military_deaths', 0) for c in conflicts)
+    total_children = sum(c.get('children_deaths', 0) for c in conflicts)
+    active_conflicts = len([c for c in conflicts if c.get('status') == 'active'])
+
+    return {
+        "total_deaths": total_deaths,
+        "civilian_deaths": total_civilian,
+        "military_deaths": total_military,
+        "children_deaths": total_children,
+        "active_conflicts": active_conflicts,
+        "total_conflicts": len(conflicts),
+        "last_fetch_at": meta.get("fetched_at") if meta else None,
+        "sources": meta.get("chart_sources", meta.get("sources", [])) if meta else [],
     }
 
 

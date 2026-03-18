@@ -45,27 +45,35 @@ const Dashboard = () => {
   const [conflicts, setConflicts] = useState([]);
   const [news, setNews] = useState([]);
   const [stats, setStats] = useState(null);
+  const [chartStats, setChartStats] = useState(null);
+  const [chartConflicts, setChartConflicts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [dataLastFetch, setDataLastFetch] = useState(null);   // when sources were last queried
   const [sourcesUsed, setSourcesUsed] = useState([]);
+  const [chartSources, setChartSources] = useState([]);
   const [nextFetchIn, setNextFetchIn] = useState(null);       // minutes until next hourly fetch
 
   const fetchData = async () => {
     try {
-      const [conflictsRes, newsRes, statsRes, lastUpdateRes] = await Promise.all([
+      const [conflictsRes, newsRes, statsRes, lastUpdateRes, chartStatsRes, chartConflictsRes] = await Promise.all([
         axios.get(`${API}/conflicts`),
         axios.get(`${API}/news`),
         axios.get(`${API}/stats`),
         axios.get(`${API}/last-update`),
+        axios.get(`${API}/chart-stats`),
+        axios.get(`${API}/chart-conflicts`),
       ]);
 
       setConflicts(conflictsRes.data);
       setNews(newsRes.data);
       setStats(statsRes.data);
+      setChartStats(chartStatsRes.data);
+      setChartConflicts(chartConflictsRes.data);
 
       const lu = lastUpdateRes.data;
       setDataLastFetch(lu.fetched_at || null);
       setSourcesUsed(lu.sources || []);
+      setChartSources(lu.chart_sources || lu.sources || []);
       setNextFetchIn(lu.next_fetch_in_minutes ?? null);
 
       setLoading(false);
@@ -82,12 +90,12 @@ const Dashboard = () => {
     return () => clearInterval(interval);
   }, []);
 
-  const casualtyData = stats ? [
-    { name: 'Civilian', value: stats.civilian_deaths, color: '#dc2626' },
-    { name: 'Military', value: stats.military_deaths, color: '#64748b' },
+  const casualtyData = chartStats ? [
+    { name: 'Civilian', value: chartStats.civilian_deaths, color: '#dc2626' },
+    { name: 'Military', value: chartStats.military_deaths, color: '#64748b' },
   ] : [];
 
-  const countryData = conflicts.map(c => ({
+  const countryData = chartConflicts.map(c => ({
     country: c.country,
     deaths: c.total_deaths
   })).sort((a, b) => b.deaths - a.deaths).slice(0, 9);
@@ -169,7 +177,7 @@ const Dashboard = () => {
             <h3 className="text-xl font-semibold uppercase tracking-tight heading-tactical text-zinc-300">
               Casualty Breakdown
             </h3>
-            <ChartTimestamp fetchedAt={dataLastFetch} sources={sourcesUsed} />
+            <ChartTimestamp fetchedAt={dataLastFetch} sources={chartSources} />
             <ResponsiveContainer width="100%" height={300}>
               <PieChart>
                 <Pie
@@ -211,7 +219,7 @@ const Dashboard = () => {
             <h3 className="text-xl font-semibold uppercase tracking-tight heading-tactical text-zinc-300">
               Deaths by Country
             </h3>
-            <ChartTimestamp fetchedAt={dataLastFetch} sources={sourcesUsed} />
+            <ChartTimestamp fetchedAt={dataLastFetch} sources={chartSources} />
             <ResponsiveContainer width="100%" height={300}>
               <BarChart data={countryData}>
                 <XAxis
