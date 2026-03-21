@@ -55,17 +55,19 @@ RSS_FEEDS = [
 UCDP_API_BASE = "https://ucdpapi.pcr.uu.se/api"
 UCDP_VERSION = "25.1"
 
-# Gleditsch-Ward numeric country IDs used by the UCDP API Country= parameter
+# Country IDs for the UCDP API Country= parameter (Gleditsch-Ward codes).
+# The parameter accepts comma-separated IDs, which is used where a conflict
+# spans both an old and a current country code (e.g. Yemen pre/post unification).
 UCDP_COUNTRY_MAP = {
-    'Ukraine':      369,
-    'Gaza/Palestine': 666,  # Events in Gaza are coded under Israel (GW 666)
-    'Sudan':        625,
-    'Myanmar':      775,
-    'Syria':        652,
-    'Yemen':        679,
-    'Ethiopia':     530,
-    'DRC (Congo)':  490,
-    'Iran':         630,
+    'Ukraine':        '369',
+    'Gaza/Palestine': '666',        # Gaza events coded under Israel (GW 666)
+    'Sudan':          '625',
+    'Myanmar':        '775',
+    'Syria':          '652',
+    'Yemen':          '678,679',    # North Yemen (678) + unified Yemen (679)
+    'Ethiopia':       '530',
+    'DRC (Congo)':    '490',
+    'Iran':           '630',
 }
 
 ACLED_COUNTRY_MAP = {
@@ -134,13 +136,14 @@ def get_ucdp_api_key() -> Optional[str]:
 
 
 async def fetch_ucdp_deaths_for_country(
-    country_id: int,
+    country_id: str,
     session: aiohttp.ClientSession,
     api_key: Optional[str] = None,
 ) -> Optional[int]:
-    """Fetch cumulative deaths from the UCDP GED API (gedevents) for a single country.
+    """Fetch cumulative deaths from the UCDP GED API (gedevents) for a country.
 
-    country_id is a Gleditsch-Ward numeric country code (e.g. 369 for Ukraine).
+    country_id is a comma-separated string of Gleditsch-Ward country codes,
+    e.g. '369' for Ukraine or '678,679' for Yemen (spans two GW codes).
     Sends x-ucdp-access-token when an API key is configured (required since Feb 2026).
     Paginates through all result pages.
     """
