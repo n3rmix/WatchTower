@@ -67,7 +67,8 @@ UCDP_COUNTRY_MAP = {
     'Yemen':          '678,679',    # North Yemen (678) + unified Yemen (679)
     'Ethiopia':       '530',
     'DRC (Congo)':    '490',
-    'Iran':           '630',
+    # Iran excluded: protest crackdowns and shadow-war events fall outside
+    # UCDP's battle-deaths methodology; baseline figure is used instead.
 }
 
 ACLED_COUNTRY_MAP = {
