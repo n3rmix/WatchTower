@@ -160,6 +160,7 @@ For the complete step-by-step guide including MongoDB setup and troubleshooting,
 **1. Backend**
 ```bash
 cd backend
+python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 
 # Create .env — see LOCAL_DEPLOYMENT.md for all options
@@ -169,8 +170,6 @@ DB_NAME=conflict_tracker
 CORS_ORIGINS=*
 UCDP_API_KEY=your-ucdp-access-token
 EOF
-
-uvicorn server:app --reload --host 0.0.0.0 --port 8001
 ```
 
 **2. Frontend**
@@ -178,8 +177,22 @@ uvicorn server:app --reload --host 0.0.0.0 --port 8001
 cd frontend
 yarn install
 echo "REACT_APP_BACKEND_URL=http://localhost:8001" > .env
-yarn start
 ```
+
+**3. Run as background daemons** (survives SSH disconnection)
+```bash
+# from the repo root
+./start.sh      # start backend + frontend in the background
+./stop.sh       # stop both
+
+# live logs
+tail -f logs/backend.log
+tail -f logs/frontend.log
+```
+
+- Frontend → http://localhost:3000
+- Backend API → http://localhost:8001
+- API docs → http://localhost:8001/docs
 
 ---
 
