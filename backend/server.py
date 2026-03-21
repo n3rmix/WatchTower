@@ -117,47 +117,57 @@ class APIKeyConfig(BaseModel):
     api_key: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
-class APIKeyCreate(BaseModel):
-    service_name: str
-    api_key: str
-
-class APIKeyResponse(BaseModel):
-    service_name: str
-    api_key_masked: str
 
 
 # ─── Live data fetching helpers ───────────────────────────────────────────────
 
-async def get_acled_credentials():
-    """Retrieve stored ACLED email and API key from DB."""
-    email_doc = await db.api_keys.find_one({"service_name": "ACLED_EMAIL"})
-    key_doc = await db.api_keys.find_one({"service_name": "ACLED"})
-    if email_doc and key_doc:
-        return email_doc["api_key"], key_doc["api_key"]
-    return None, None
+def get_acled_credentials():
+    """Return ACLED email and API key from environment variables."""
+    email = os.environ.get("ACLED_EMAIL") or None
+    key = os.environ.get("ACLED_KEY") or None
+    return email, key
 
 
-async def fetch_ucdp_deaths_for_country(country_name: str, session: aiohttp.ClientSession) -> Optional[int]:
-    """Fetch cumulative battle deaths from the UCDP GED API for a single country, paginating through all results."""
+def get_ucdp_api_key() -> Optional[str]:
+    """Return the UCDP access token from the UCDP_API_KEY environment variable."""
+    return os.environ.get("UCDP_API_KEY") or None
+
+
+async def fetch_ucdp_deaths_for_country(
+    country_name: str,
+    session: aiohttp.ClientSession,
+    api_key: Optional[str] = None,
+) -> Optional[int]:
+    """Fetch cumulative deaths from the UCDP GED API (gedevents) for a single country.
+
+    Sends x-ucdp-access-token when an API key is configured (required since Feb 2026).
+    Paginates through all result pages.
+    """
     try:
-        url = f"{UCDP_API_BASE}/gedbattle/{UCDP_VERSION}"
+        url = f"{UCDP_API_BASE}/gedevents/{UCDP_VERSION}"
+        headers: Dict[str, str] = {}
+        if api_key:
+            headers["x-ucdp-access-token"] = api_key
         page_size = 1000
         page = 1
         total = 0
         while True:
             params = {"pagesize": page_size, "page": page, "country": country_name}
-            async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+            async with session.get(
+                url, params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=30)
+            ) as resp:
                 if resp.status != 200:
+                    logger.warning(f"UCDP returned HTTP {resp.status} for {country_name}")
                     break
                 data = await resp.json()
                 results = data.get("Result", [])
                 if not results:
                     break
-                total += sum(int(event.get("best_est", 0) or 0) for event in results)
+                total += sum(int(event.get("best", 0) or 0) for event in results)
                 if len(results) < page_size:
                     break
                 page += 1
-        logger.info(f"UCDP: {country_name} → {total} battle deaths ({page} page(s))")
+        logger.info(f"UCDP: {country_name} → {total} deaths ({page} page(s))")
         return total if total > 0 else None
     except Exception as e:
         logger.warning(f"UCDP fetch error for {country_name}: {e}")
@@ -165,14 +175,15 @@ async def fetch_ucdp_deaths_for_country(country_name: str, session: aiohttp.Clie
 
 
 async def fetch_ucdp_data() -> Dict[str, int]:
-    """Fetch UCDP battle deaths for all tracked conflicts. Returns {conflict_country: total_deaths}."""
+    """Fetch UCDP deaths for all tracked conflicts. Returns {conflict_country: total_deaths}."""
+    api_key = get_ucdp_api_key()
     results: Dict[str, int] = {}
     async with aiohttp.ClientSession(headers={"User-Agent": "WatchTower/1.0"}) as session:
         tasks = []
         keys = []
         for conflict_country, ucdp_country in UCDP_COUNTRY_MAP.items():
             keys.append(conflict_country)
-            tasks.append(fetch_ucdp_deaths_for_country(ucdp_country, session))
+            tasks.append(fetch_ucdp_deaths_for_country(ucdp_country, session, api_key))
         totals = await asyncio.gather(*tasks, return_exceptions=True)
         for key, total in zip(keys, totals):
             if isinstance(total, int) and total is not None:
@@ -544,7 +555,7 @@ async def scrape_conflict_data():
 
     # ── 1. Try ACLED (highest-quality, requires stored credentials) ──────────
     acled_deaths: Dict[str, int] = {}
-    acled_email, acled_key = await get_acled_credentials()
+    acled_email, acled_key = get_acled_credentials()
     if acled_email and acled_key:
         try:
             acled_deaths = await fetch_acled_data(acled_email, acled_key)
@@ -678,31 +689,6 @@ async def get_last_update():
         "next_fetch_in_minutes": next_fetch_in_minutes,
     }
 
-
-@api_router.post("/settings/api-keys")
-async def save_api_key(api_key_data: APIKeyCreate):
-    """Save or update an API key configuration."""
-    key_dict = api_key_data.model_dump()
-    key_dict['id'] = str(uuid.uuid4())
-    key_dict['created_at'] = datetime.now(timezone.utc).isoformat()
-    await db.api_keys.update_one(
-        {"service_name": api_key_data.service_name},
-        {"$set": key_dict},
-        upsert=True,
-    )
-    return {"status": "success", "message": f"API key for {api_key_data.service_name} saved"}
-
-
-@api_router.get("/settings/api-keys", response_model=List[APIKeyResponse])
-async def get_api_keys():
-    """Get all configured API keys (masked)."""
-    keys = await db.api_keys.find({}, {"_id": 0}).to_list(100)
-    masked_keys = []
-    for key in keys:
-        raw = key['api_key']
-        masked = raw[:4] + "*" * (len(raw) - 8) + raw[-4:] if len(raw) > 8 else "****"
-        masked_keys.append({"service_name": key['service_name'], "api_key_masked": masked})
-    return masked_keys
 
 
 @api_router.get("/stats")
