@@ -117,30 +117,20 @@ class APIKeyConfig(BaseModel):
     api_key: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
-class APIKeyCreate(BaseModel):
-    service_name: str
-    api_key: str
-
-class APIKeyResponse(BaseModel):
-    service_name: str
-    api_key_masked: str
 
 
 # ─── Live data fetching helpers ───────────────────────────────────────────────
 
-async def get_acled_credentials():
-    """Retrieve stored ACLED email and API key from DB."""
-    email_doc = await db.api_keys.find_one({"service_name": "ACLED_EMAIL"})
-    key_doc = await db.api_keys.find_one({"service_name": "ACLED"})
-    if email_doc and key_doc:
-        return email_doc["api_key"], key_doc["api_key"]
-    return None, None
+def get_acled_credentials():
+    """Return ACLED email and API key from environment variables."""
+    email = os.environ.get("ACLED_EMAIL") or None
+    key = os.environ.get("ACLED_KEY") or None
+    return email, key
 
 
-async def get_ucdp_api_key() -> Optional[str]:
-    """Retrieve stored UCDP access token from DB."""
-    doc = await db.api_keys.find_one({"service_name": "UCDP"})
-    return doc["api_key"] if doc else None
+def get_ucdp_api_key() -> Optional[str]:
+    """Return the UCDP access token from the UCDP_API_KEY environment variable."""
+    return os.environ.get("UCDP_API_KEY") or None
 
 
 async def fetch_ucdp_deaths_for_country(
@@ -186,7 +176,7 @@ async def fetch_ucdp_deaths_for_country(
 
 async def fetch_ucdp_data() -> Dict[str, int]:
     """Fetch UCDP deaths for all tracked conflicts. Returns {conflict_country: total_deaths}."""
-    api_key = await get_ucdp_api_key()
+    api_key = get_ucdp_api_key()
     results: Dict[str, int] = {}
     async with aiohttp.ClientSession(headers={"User-Agent": "WatchTower/1.0"}) as session:
         tasks = []
@@ -565,7 +555,7 @@ async def scrape_conflict_data():
 
     # ── 1. Try ACLED (highest-quality, requires stored credentials) ──────────
     acled_deaths: Dict[str, int] = {}
-    acled_email, acled_key = await get_acled_credentials()
+    acled_email, acled_key = get_acled_credentials()
     if acled_email and acled_key:
         try:
             acled_deaths = await fetch_acled_data(acled_email, acled_key)
@@ -699,31 +689,6 @@ async def get_last_update():
         "next_fetch_in_minutes": next_fetch_in_minutes,
     }
 
-
-@api_router.post("/settings/api-keys")
-async def save_api_key(api_key_data: APIKeyCreate):
-    """Save or update an API key configuration."""
-    key_dict = api_key_data.model_dump()
-    key_dict['id'] = str(uuid.uuid4())
-    key_dict['created_at'] = datetime.now(timezone.utc).isoformat()
-    await db.api_keys.update_one(
-        {"service_name": api_key_data.service_name},
-        {"$set": key_dict},
-        upsert=True,
-    )
-    return {"status": "success", "message": f"API key for {api_key_data.service_name} saved"}
-
-
-@api_router.get("/settings/api-keys", response_model=List[APIKeyResponse])
-async def get_api_keys():
-    """Get all configured API keys (masked)."""
-    keys = await db.api_keys.find({}, {"_id": 0}).to_list(100)
-    masked_keys = []
-    for key in keys:
-        raw = key['api_key']
-        masked = raw[:4] + "*" * (len(raw) - 8) + raw[-4:] if len(raw) > 8 else "****"
-        masked_keys.append({"service_name": key['service_name'], "api_key_masked": masked})
-    return masked_keys
 
 
 @api_router.get("/stats")

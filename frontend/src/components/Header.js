@@ -1,5 +1,4 @@
-import { Globe, RefreshCw, Settings as SettingsIcon, Database, AlertTriangle } from "lucide-react";
-import { useNavigate } from "react-router-dom";
+import { Globe, RefreshCw, Database, AlertTriangle } from "lucide-react";
 import { Button } from "./ui/button";
 
 /** Format an ISO string or Date as "DD MMM YYYY HH:MM UTC" */
@@ -19,7 +18,6 @@ function isStale(ts) {
 }
 
 const Header = ({ dataLastFetch, sourcesUsed = [], nextFetchIn, onRefresh }) => {
-  const navigate = useNavigate();
   const stale = isStale(dataLastFetch);
 
   return (
@@ -78,16 +76,6 @@ const Header = ({ dataLastFetch, sourcesUsed = [], nextFetchIn, onRefresh }) => 
               data-testid="refresh-btn"
             >
               <RefreshCw className="w-4 h-4" />
-            </Button>
-
-            <Button
-              onClick={() => navigate('/settings')}
-              variant="secondary"
-              size="sm"
-              className="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-mono text-xs px-3 py-1 rounded-sm border border-zinc-700"
-              data-testid="settings-btn"
-            >
-              <SettingsIcon className="w-4 h-4" />
             </Button>
           </div>
         </div>
