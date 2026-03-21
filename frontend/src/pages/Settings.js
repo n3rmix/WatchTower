@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
-import { ArrowLeft, Save, Key, Database } from "lucide-react";
+import { ArrowLeft, Save, Key, Database, Shield } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 
@@ -13,8 +13,10 @@ const Settings = () => {
   const [apiKeys, setApiKeys] = useState([]);
   const [newKey, setNewKey] = useState({ service_name: '', api_key: '' });
   const [acled, setAcled] = useState({ email: '', api_key: '' });
+  const [ucdpKey, setUcdpKey] = useState('');
   const [message, setMessage] = useState('');
   const [acledMessage, setAcledMessage] = useState('');
+  const [ucdpMessage, setUcdpMessage] = useState('');
 
   useEffect(() => {
     fetchApiKeys();
@@ -68,6 +70,25 @@ const Settings = () => {
     }
   };
 
+  const handleSaveUcdp = async (e) => {
+    e.preventDefault();
+    if (!ucdpKey) {
+      setUcdpMessage('Please enter your UCDP access token');
+      return;
+    }
+    try {
+      await axios.post(`${API}/settings/api-keys`, { service_name: 'UCDP', api_key: ucdpKey });
+      setUcdpMessage('UCDP token saved — will be used on next hourly refresh');
+      setUcdpKey('');
+      fetchApiKeys();
+      setTimeout(() => setUcdpMessage(''), 4000);
+    } catch (error) {
+      setUcdpMessage('Error saving UCDP token');
+      console.error(error);
+    }
+  };
+
+  const ucdpConfigured = apiKeys.some(k => k.service_name === 'UCDP');
   const acledConfigured = apiKeys.some(k => k.service_name === 'ACLED') &&
                           apiKeys.some(k => k.service_name === 'ACLED_EMAIL');
 
@@ -89,6 +110,62 @@ const Settings = () => {
         </div>
 
         <div className="space-y-8 max-w-2xl">
+          {/* ── UCDP Section ──────────────────────────────────────────────── */}
+          <div className="tactical-card p-6 corner-accent" data-testid="ucdp-section">
+            <div className="flex items-center gap-3 mb-4">
+              <Shield className="w-6 h-6 text-red-500" />
+              <h2 className="text-2xl font-semibold uppercase tracking-tight heading-tactical text-zinc-300">
+                UCDP Access Token
+              </h2>
+              {ucdpConfigured && (
+                <span className="ml-auto text-xs font-mono text-green-400 border border-green-800 bg-green-950/30 px-2 py-0.5 rounded-sm">
+                  CONFIGURED
+                </span>
+              )}
+            </div>
+
+            <p className="text-sm text-zinc-400 mb-2">
+              The Uppsala Conflict Data Program (UCDP) is the primary source for casualty figures
+              in the Casualty Breakdown and Deaths by Country charts. An access token is required
+              since February 2026 — request one free at{" "}
+              <span className="text-blue-400 font-mono">ucdp.uu.se</span>.
+            </p>
+            <p className="text-xs text-zinc-600 font-mono mb-6">
+              Token is sent as the <span className="text-zinc-500">x-ucdp-access-token</span> header
+              on every API request. Data is refreshed hourly.
+            </p>
+
+            <form onSubmit={handleSaveUcdp} className="space-y-4" data-testid="ucdp-form">
+              <div>
+                <label className="block text-xs uppercase tracking-wider text-zinc-400 mb-2 font-mono">
+                  UCDP Access Token
+                </label>
+                <Input
+                  type="password"
+                  value={ucdpKey}
+                  onChange={(e) => setUcdpKey(e.target.value)}
+                  placeholder="Enter UCDP access token"
+                  className="bg-zinc-900 border-zinc-800 text-zinc-100 font-mono text-sm"
+                  data-testid="ucdp-key-input"
+                />
+              </div>
+              <Button
+                type="submit"
+                className="w-full bg-red-700 hover:bg-red-600 text-white font-mono uppercase tracking-wider text-xs px-4 py-2 rounded-sm"
+                data-testid="save-ucdp-btn"
+              >
+                <Save className="w-4 h-4 mr-2" />
+                Save UCDP Token
+              </Button>
+            </form>
+
+            {ucdpMessage && (
+              <div className="mt-4 p-3 bg-zinc-900 border border-zinc-800 rounded-sm" data-testid="ucdp-message">
+                <p className="text-sm font-mono text-zinc-300">{ucdpMessage}</p>
+              </div>
+            )}
+          </div>
+
           {/* ── ACLED Section ─────────────────────────────────────────────── */}
           <div className="tactical-card p-6 corner-accent" data-testid="acled-section">
             <div className="flex items-center gap-3 mb-4">

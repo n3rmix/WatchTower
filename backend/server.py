@@ -137,27 +137,47 @@ async def get_acled_credentials():
     return None, None
 
 
-async def fetch_ucdp_deaths_for_country(country_name: str, session: aiohttp.ClientSession) -> Optional[int]:
-    """Fetch cumulative battle deaths from the UCDP GED API for a single country, paginating through all results."""
+async def get_ucdp_api_key() -> Optional[str]:
+    """Retrieve stored UCDP access token from DB."""
+    doc = await db.api_keys.find_one({"service_name": "UCDP"})
+    return doc["api_key"] if doc else None
+
+
+async def fetch_ucdp_deaths_for_country(
+    country_name: str,
+    session: aiohttp.ClientSession,
+    api_key: Optional[str] = None,
+) -> Optional[int]:
+    """Fetch cumulative deaths from the UCDP GED API (gedevents) for a single country.
+
+    Sends x-ucdp-access-token when an API key is configured (required since Feb 2026).
+    Paginates through all result pages.
+    """
     try:
-        url = f"{UCDP_API_BASE}/gedbattle/{UCDP_VERSION}"
+        url = f"{UCDP_API_BASE}/gedevents/{UCDP_VERSION}"
+        headers: Dict[str, str] = {}
+        if api_key:
+            headers["x-ucdp-access-token"] = api_key
         page_size = 1000
         page = 1
         total = 0
         while True:
             params = {"pagesize": page_size, "page": page, "country": country_name}
-            async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+            async with session.get(
+                url, params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=30)
+            ) as resp:
                 if resp.status != 200:
+                    logger.warning(f"UCDP returned HTTP {resp.status} for {country_name}")
                     break
                 data = await resp.json()
                 results = data.get("Result", [])
                 if not results:
                     break
-                total += sum(int(event.get("best_est", 0) or 0) for event in results)
+                total += sum(int(event.get("best", 0) or 0) for event in results)
                 if len(results) < page_size:
                     break
                 page += 1
-        logger.info(f"UCDP: {country_name} → {total} battle deaths ({page} page(s))")
+        logger.info(f"UCDP: {country_name} → {total} deaths ({page} page(s))")
         return total if total > 0 else None
     except Exception as e:
         logger.warning(f"UCDP fetch error for {country_name}: {e}")
@@ -165,14 +185,15 @@ async def fetch_ucdp_deaths_for_country(country_name: str, session: aiohttp.Clie
 
 
 async def fetch_ucdp_data() -> Dict[str, int]:
-    """Fetch UCDP battle deaths for all tracked conflicts. Returns {conflict_country: total_deaths}."""
+    """Fetch UCDP deaths for all tracked conflicts. Returns {conflict_country: total_deaths}."""
+    api_key = await get_ucdp_api_key()
     results: Dict[str, int] = {}
     async with aiohttp.ClientSession(headers={"User-Agent": "WatchTower/1.0"}) as session:
         tasks = []
         keys = []
         for conflict_country, ucdp_country in UCDP_COUNTRY_MAP.items():
             keys.append(conflict_country)
-            tasks.append(fetch_ucdp_deaths_for_country(ucdp_country, session))
+            tasks.append(fetch_ucdp_deaths_for_country(ucdp_country, session, api_key))
         totals = await asyncio.gather(*tasks, return_exceptions=True)
         for key, total in zip(keys, totals):
             if isinstance(total, int) and total is not None:
