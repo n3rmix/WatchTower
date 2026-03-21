@@ -37,6 +37,7 @@ WatchTower is a real-time conflict monitoring system that aggregates casualty da
   - Transparent data source attribution per conflict row
 
 - **Interactive Data Visualizations**
+  - Spinning WebGL globe with pulsing red/orange markers at all 9 active conflict regions
   - Casualty breakdown pie chart (civilian vs military) — sourced exclusively from UCDP + OHCHR/OCHA
   - Deaths by country bar chart — sourced exclusively from UCDP + OHCHR/OCHA
   - Responsive design with tactical/situation room aesthetic
@@ -134,6 +135,7 @@ If all live sources fail, hardcoded baseline figures (themselves derived from th
 - **React Fast Marquee** — News ticker
 - **Lucide React** — Icon system
 - **Axios** — HTTP client
+- **Cobe** — Tiny WebGL spinning globe
 
 ### Design System
 - **Typography:** Barlow Condensed (headings), Manrope (body), JetBrains Mono (data)
@@ -299,7 +301,7 @@ Contributions are welcome. Areas for improvement:
 
 **High Priority**
 - [ ] Historical trend charts
-- [ ] World map visualization
+- [x] World map / globe visualization
 - [ ] Conflict timeline view
 
 **Medium Priority**
