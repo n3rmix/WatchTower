@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import createGlobe from "cobe";
 
-const CONFLICT_MARKERS = [
+const BASE_MARKERS = [
   { location: [49.0, 31.0],  size: 0.08 }, // Ukraine
   { location: [31.5, 34.5],  size: 0.09 }, // Gaza/Palestine
   { location: [15.5, 32.5],  size: 0.07 }, // Sudan
@@ -16,14 +16,15 @@ const CONFLICT_MARKERS = [
 const ConflictGlobe = () => {
   const canvasRef = useRef(null);
   const globeRef = useRef(null);
+  const rafRef = useRef(null);
   const phiRef = useRef(0);
+  const frameRef = useRef(0);
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    let frame = 0;
     const SIZE = 350;
 
     globeRef.current = createGlobe(canvas, {
@@ -39,24 +40,26 @@ const ConflictGlobe = () => {
       baseColor: [0.05, 0.05, 0.08],
       markerColor: [1, 0.18, 0.18],
       glowColor: [0.6, 0.06, 0.06],
-      markers: CONFLICT_MARKERS,
-      onRender(state) {
-        frame += 1;
-        state.phi = phiRef.current;
-        // Slow auto-rotation
-        phiRef.current += 0.003;
-        // Pulse marker size using sine wave
-        const pulse = 1 + 0.35 * Math.sin(frame * 0.06);
-        state.markers = CONFLICT_MARKERS.map((m) => ({
-          ...m,
-          size: m.size * pulse,
-        }));
-      },
+      markers: BASE_MARKERS,
     });
 
     setLoaded(true);
 
+    function animate() {
+      frameRef.current += 1;
+      phiRef.current += 0.003;
+      const pulse = 1 + 0.35 * Math.sin(frameRef.current * 0.06);
+      globeRef.current?.update({
+        phi: phiRef.current,
+        markers: BASE_MARKERS.map((m) => ({ ...m, size: m.size * pulse })),
+      });
+      rafRef.current = requestAnimationFrame(animate);
+    }
+
+    rafRef.current = requestAnimationFrame(animate);
+
     return () => {
+      cancelAnimationFrame(rafRef.current);
       globeRef.current?.destroy();
     };
   }, []);
@@ -67,7 +70,6 @@ const ConflictGlobe = () => {
       data-testid="conflict-globe"
     >
       <div className="relative" style={{ width: 350, height: 350 }}>
-        {/* Ambient glow underneath */}
         <div
           className="absolute inset-0 rounded-full pointer-events-none"
           style={{

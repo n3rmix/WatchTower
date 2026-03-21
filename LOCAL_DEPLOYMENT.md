@@ -206,6 +206,7 @@ Open `http://localhost:3000`. You should see:
 
 - Header with "Sources updated" timestamp and `UCDP · OHCHR/OCHA` source pills
 - Four stat cards (Total Deaths, Civilian, Military, Children)
+- Spinning WebGL globe with 9 pulsing red markers at conflict regions
 - Active conflicts counter (9)
 - Casualty Breakdown pie chart with `UCDP · OHCHR/OCHA` source pills
 - Deaths by Country bar chart with `UCDP · OHCHR/OCHA` source pills
@@ -362,6 +363,7 @@ Both servers support hot reload:
 | Edit dashboard layout | `frontend/src/pages/Dashboard.js` |
 | Edit header | `frontend/src/components/Header.js` |
 | Edit conflict table | `frontend/src/components/ConflictTable.js` |
+| Edit globe markers / animation | `frontend/src/components/ConflictGlobe.js` |
 | Edit styles | `frontend/src/App.css`, `frontend/src/index.css` |
 
 ---
