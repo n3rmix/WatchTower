@@ -53,19 +53,19 @@ RSS_FEEDS = [
 
 # UCDP API configuration
 UCDP_API_BASE = "https://ucdpapi.pcr.uu.se/api"
-UCDP_VERSION = "23.1"
+UCDP_VERSION = "25.1"
 
-# Country name mappings for external APIs
+# Gleditsch-Ward numeric country IDs used by the UCDP API Country= parameter
 UCDP_COUNTRY_MAP = {
-    'Ukraine': 'Ukraine',
-    'Gaza/Palestine': 'Israel',
-    'Sudan': 'Sudan',
-    'Myanmar': 'Myanmar (Burma)',
-    'Syria': 'Syria',
-    'Yemen': 'Yemen (North Yemen)',
-    'Ethiopia': 'Ethiopia',
-    'DRC (Congo)': 'Democratic Republic of Congo (Zaire)',
-    'Iran': 'Iran',
+    'Ukraine':      369,
+    'Gaza/Palestine': 666,  # Events in Gaza are coded under Israel (GW 666)
+    'Sudan':        625,
+    'Myanmar':      775,
+    'Syria':        652,
+    'Yemen':        679,
+    'Ethiopia':     530,
+    'DRC (Congo)':  490,
+    'Iran':         630,
 }
 
 ACLED_COUNTRY_MAP = {
@@ -134,12 +134,13 @@ def get_ucdp_api_key() -> Optional[str]:
 
 
 async def fetch_ucdp_deaths_for_country(
-    country_name: str,
+    country_id: int,
     session: aiohttp.ClientSession,
     api_key: Optional[str] = None,
 ) -> Optional[int]:
     """Fetch cumulative deaths from the UCDP GED API (gedevents) for a single country.
 
+    country_id is a Gleditsch-Ward numeric country code (e.g. 369 for Ukraine).
     Sends x-ucdp-access-token when an API key is configured (required since Feb 2026).
     Paginates through all result pages.
     """
@@ -152,12 +153,12 @@ async def fetch_ucdp_deaths_for_country(
         page = 1
         total = 0
         while True:
-            params = {"pagesize": page_size, "page": page, "country": country_name}
+            params = {"pagesize": page_size, "page": page, "Country": country_id}
             async with session.get(
                 url, params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=30)
             ) as resp:
                 if resp.status != 200:
-                    logger.warning(f"UCDP returned HTTP {resp.status} for {country_name}")
+                    logger.warning(f"UCDP returned HTTP {resp.status} for country_id={country_id}")
                     break
                 data = await resp.json()
                 results = data.get("Result", [])
@@ -167,10 +168,10 @@ async def fetch_ucdp_deaths_for_country(
                 if len(results) < page_size:
                     break
                 page += 1
-        logger.info(f"UCDP: {country_name} → {total} deaths ({page} page(s))")
+        logger.info(f"UCDP: country_id={country_id} → {total} deaths ({page} page(s))")
         return total if total > 0 else None
     except Exception as e:
-        logger.warning(f"UCDP fetch error for {country_name}: {e}")
+        logger.warning(f"UCDP fetch error for country_id={country_id}: {e}")
     return None
 
 
