@@ -7,6 +7,7 @@ import Header from "../components/Header";
 import NewsTicker from "../components/NewsTicker";
 import StatCard from "../components/StatCard";
 import ConflictTable from "../components/ConflictTable";
+import ConflictGlobe from "../components/ConflictGlobe";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -152,6 +153,9 @@ const Dashboard = () => {
             testId="stat-children-deaths"
           />
         </div>
+
+        {/* Spinning Globe */}
+        <ConflictGlobe />
 
         {/* Active Conflicts Count */}
         <div className="tactical-card p-4 mb-6 corner-accent" data-testid="active-conflicts-banner">
