@@ -112,7 +112,7 @@ If all live sources fail, hardcoded baseline figures (themselves derived from th
 - Financial Times, The Economist
 - Chatham House, Gefira
 - Geopolitical Economy Report, Geopolitical Monitor
-- CFR, RAND Corporation
+- CFR
 
 ---
 

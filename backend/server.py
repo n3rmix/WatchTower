@@ -40,7 +40,6 @@ RSS_FEEDS = [
     "https://thecipherbrief.com/feed",
     "https://warontherocks.com/feed",
     "https://www.cfr.org/rss/all",
-    "https://www.rand.org/topics/international-affairs.xml",
     "https://www.geopoliticalmonitor.com/feed",
     "https://www.foreignaffairs.com/feeds/topics/geopolitics",
     "https://foreignpolicy.com/feed",

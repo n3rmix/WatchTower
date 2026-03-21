@@ -39,3 +39,7 @@ venv/
 # Build caches
 .cache/
 frontend/node_modules/.cache/
+
+# Daemon runtime files
+logs/
+.pids/
