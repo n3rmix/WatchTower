@@ -32,6 +32,18 @@ const Header = ({ dataLastFetch, sourcesUsed = [], nextFetchIn, onRefresh }) => 
                 Project WATCHTOWER
               </h1>
               <p className="text-xs text-zinc-500 font-mono uppercase tracking-wider">Global Conflict Monitoring</p>
+              <p className="text-xs text-zinc-600 font-mono mt-0.5">
+                Data courtesy of{" "}
+                <a
+                  href="https://ucdp.uu.se"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-zinc-400 hover:text-red-400 underline underline-offset-2 transition-colors"
+                >
+                  UCDP
+                </a>
+                {" "}— thank you for freely providing access.
+              </p>
             </div>
           </div>
 

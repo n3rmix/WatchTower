@@ -7,6 +7,7 @@ import Header from "../components/Header";
 import NewsTicker from "../components/NewsTicker";
 import StatCard from "../components/StatCard";
 import ConflictTable from "../components/ConflictTable";
+import ConflictGlobe from "../components/ConflictGlobe";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -153,6 +154,9 @@ const Dashboard = () => {
           />
         </div>
 
+        {/* Spinning Globe */}
+        <ConflictGlobe />
+
         {/* Active Conflicts Count */}
         <div className="tactical-card p-4 mb-6 corner-accent" data-testid="active-conflicts-banner">
           <div className="flex items-center justify-between">
@@ -255,22 +259,6 @@ const Dashboard = () => {
 
       {/* News Ticker */}
       <NewsTicker news={news} />
-
-      {/* Footer */}
-      <footer className="border-t border-zinc-800 bg-zinc-950/50 py-4 px-4 text-center">
-        <p className="text-xs font-mono text-zinc-500">
-          Casualty data provided by the{" "}
-          <a
-            href="https://ucdp.uu.se"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-zinc-300 hover:text-red-400 underline underline-offset-2 transition-colors"
-          >
-            Uppsala Conflict Data Program (UCDP)
-          </a>
-          , Uppsala University — thank you for freely providing access to your data.
-        </p>
-      </footer>
     </div>
   );
 };
