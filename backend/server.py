@@ -67,7 +67,8 @@ UCDP_COUNTRY_MAP = {
     'Yemen':          '678,679',    # North Yemen (678) + unified Yemen (679)
     'Ethiopia':       '530',
     'DRC (Congo)':    '490',
-    'Iran':           '630',
+    # Iran excluded: protest crackdowns and shadow-war events fall outside
+    # UCDP's battle-deaths methodology; baseline figure is used instead.
 }
 
 ACLED_COUNTRY_MAP = {
@@ -311,6 +312,87 @@ async def scrape_ocha_gaza_deaths() -> Optional[int]:
     return None
 
 
+async def scrape_hengaw_iran_deaths() -> Optional[int]:
+    """
+    Scrape Hengaw war casualty reports for total deaths in Iran.
+    Tries the most recent article numbers first, falls back to earlier ones.
+    Returns total killed if found, None otherwise.
+    """
+    # Probe from high to low — Hengaw increments article numbers per report
+    article_numbers = list(range(25, 4, -1))
+    urls_to_try = [
+        f"https://hengaw.net/en/reports-and-statistics-1/2026/03/article-{n}"
+        for n in article_numbers
+    ]
+    patterns = [
+        r'(\d[\d,]+)\s+killed(?:,|\s+in|\s+including)',
+        r'death\s+toll\s+(?:reaches?|hits?)\s+(\d[\d,]+)',
+        r'at\s+least\s+(\d[\d,]+)\s+(?:people\s+)?(?:had\s+been\s+)?killed',
+        r'(\d[\d,]+)\s+people\s+(?:had\s+been\s+)?killed',
+        r'total(?:.*?)(\d[\d,]+)(?:\s+killed|\s+dead)',
+    ]
+    try:
+        async with aiohttp.ClientSession(headers={"User-Agent": "Mozilla/5.0 (compatible; WatchTower/1.0)"}) as session:
+            for url in urls_to_try:
+                try:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                        if resp.status != 200:
+                            continue
+                        html = await resp.text()
+                        text = BeautifulSoup(html, 'lxml').get_text(" ", strip=True)
+                        for pattern in patterns:
+                            match = re.search(pattern, text, re.IGNORECASE)
+                            if match:
+                                num = int(match.group(1).replace(',', ''))
+                                if 1_000 < num < 200_000:
+                                    logger.info(f"Hengaw Iran war deaths: {num} (from {url})")
+                                    return num
+                except Exception as e:
+                    logger.warning(f"Hengaw scrape attempt failed for {url}: {e}")
+    except Exception as e:
+        logger.warning(f"Hengaw Iran scrape error: {e}")
+    return None
+
+
+async def scrape_ihr_iran_deaths() -> Optional[int]:
+    """
+    Scrape Iran Human Rights (IHR) annual report for total execution count.
+    Used as fallback if Hengaw war data is unavailable.
+    Returns total executions if found, None otherwise.
+    """
+    urls_to_try = [
+        "https://iranhr.net/en/reports/42/",   # 2024 annual report (975 executions)
+        "https://iranhr.net/en/articles/",
+    ]
+    patterns = [
+        r'at\s+least\s+(\d[\d,]+)\s+people\s+were\s+executed',
+        r'(\d[\d,]+)\s+people\s+were\s+executed',
+        r'(\d[\d,]+)\s+executions?\s+(?:in|recorded|were)',
+        r'executed\s+(?:at\s+least\s+)?(\d[\d,]+)',
+    ]
+    try:
+        async with aiohttp.ClientSession(headers={"User-Agent": "Mozilla/5.0 (compatible; WatchTower/1.0)"}) as session:
+            for url in urls_to_try:
+                try:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                        if resp.status != 200:
+                            continue
+                        html = await resp.text()
+                        text = BeautifulSoup(html, 'lxml').get_text(" ", strip=True)
+                        for pattern in patterns:
+                            match = re.search(pattern, text, re.IGNORECASE)
+                            if match:
+                                num = int(match.group(1).replace(',', ''))
+                                if 100 < num < 5_000:
+                                    logger.info(f"IHR Iran executions: {num} (from {url})")
+                                    return num
+                except Exception as e:
+                    logger.warning(f"IHR scrape attempt failed for {url}: {e}")
+    except Exception as e:
+        logger.warning(f"IHR Iran scrape error: {e}")
+    return None
+
+
 async def update_last_fetch_metadata(sources_used: List[str], chart_sources: Optional[List[str]] = None):
     """Store the timestamp of the most recent successful live data fetch."""
     now = datetime.now(timezone.utc)
@@ -476,14 +558,14 @@ BASELINE_CONFLICTS = [
     {
         'country': 'Iran',
         'region': 'Middle East',
-        'total_deaths': 2800,
-        'civilian_deaths': 2100,
-        'military_deaths': 700,
-        'children_deaths': 320,
-        'description': 'Internal civil unrest and government crackdowns following nationwide protests since 2022, shadow war with Israel involving targeted assassinations and sabotage operations, tensions with US including sanctions and regional proxy conflicts, and Kurdish insurgencies.',
+        'total_deaths': 5900,
+        'civilian_deaths': 595,
+        'military_deaths': 5305,
+        'children_deaths': 127,
+        'description': 'US-Israeli air and missile strikes on Iranian military infrastructure beginning February 2026, targeting sites across 26 provinces. Preceded by years of internal repression, protest crackdowns, shadow-war assassinations, and Kurdish insurgencies.',
         'countries_involved': ['Iran', 'Israel', 'United States'],
-        'parties_involved': ['Iranian Security Forces', 'IRGC', 'Basij Militia', 'Kurdish Democratic Party of Iran (KDPI)', 'Komala', 'Free Life Party of Kurdistan (PJAK)', 'Iranian Opposition Groups', 'Mossad', 'Israeli Defense Forces', 'US Forces'],
-        'data_sources': ['Iran Human Rights (IHR)', 'Hengaw', 'Amnesty International', 'UN Human Rights'],
+        'parties_involved': ['IRGC', 'Iranian Armed Forces', 'Basij Militia', 'Israeli Air Force', 'US Forces', 'Kurdish Democratic Party of Iran (KDPI)', 'PJAK', 'Iranian Opposition Groups'],
+        'data_sources': ['Hengaw', 'Iran Human Rights (IHR)', 'Amnesty International', 'UN Human Rights'],
         'status': 'active'
     }
 ]
@@ -494,6 +576,7 @@ def _build_records(
     primary_deaths: Dict[str, int],
     ohchr_ukraine_civilian: Optional[int],
     ocha_gaza_total: Optional[int],
+    iran_total: Optional[int] = None,
 ) -> list:
     """
     Merge live death figures into baseline conflict records.
@@ -539,6 +622,18 @@ def _build_records(
                 record['civilian_deaths'] = int(ocha_gaza_total * civ_ratio)
                 record['military_deaths'] = int(ocha_gaza_total * mil_ratio)
                 record['children_deaths'] = int(ocha_gaza_total * child_ratio)
+
+        # Override Iran total deaths with Hengaw/IHR figure if available
+        if country == 'Iran' and isinstance(iran_total, int):
+            old_total = record['total_deaths']
+            record['total_deaths'] = iran_total
+            if old_total > 0:
+                civ_ratio = record['civilian_deaths'] / old_total
+                mil_ratio = record['military_deaths'] / old_total
+                child_ratio = record['children_deaths'] / old_total
+                record['civilian_deaths'] = int(iran_total * civ_ratio)
+                record['military_deaths'] = int(iran_total * mil_ratio)
+                record['children_deaths'] = int(iran_total * child_ratio)
 
         conflicts.append(record)
     return conflicts
@@ -591,21 +686,32 @@ async def scrape_conflict_data():
     except Exception as e:
         logger.error(f"OHCHR/OCHA scrape failed: {e}")
 
+    # ── 4. Hengaw/IHR scraping for Iran total deaths ─────────────────────────
+    iran_total: Optional[int] = None
+    try:
+        iran_total = await scrape_hengaw_iran_deaths()
+        if not isinstance(iran_total, int):
+            iran_total = await scrape_ihr_iran_deaths()
+        if isinstance(iran_total, int):
+            sources_used.append("Hengaw/IHR")
+    except Exception as e:
+        logger.error(f"Hengaw/IHR Iran scrape failed: {e}")
+
     if not sources_used:
         sources_used.append("Baseline (live sources unavailable)")
         logger.warning("All live sources failed — using baseline conflict data")
 
-    # ── 4. Build main conflicts (ACLED > UCDP priority) ──────────────────────
+    # ── 5. Build main conflicts (ACLED > UCDP priority) ──────────────────────
     acled_or_ucdp: Dict[str, int] = {**ucdp_deaths, **acled_deaths}  # ACLED wins on overlap
-    conflicts = _build_records(now, acled_or_ucdp, ohchr_ukraine_civilian, ocha_gaza_total)
+    conflicts = _build_records(now, acled_or_ucdp, ohchr_ukraine_civilian, ocha_gaza_total, iran_total)
 
-    # ── 5. Build chart-only conflicts (UCDP + OHCHR/OCHA, no ACLED) ──────────
-    chart_conflicts = _build_records(now, ucdp_deaths, ohchr_ukraine_civilian, ocha_gaza_total)
+    # ── 6. Build chart-only conflicts (UCDP + OHCHR/OCHA + Hengaw/IHR, no ACLED) ──
+    chart_conflicts = _build_records(now, ucdp_deaths, ohchr_ukraine_civilian, ocha_gaza_total, iran_total)
     # Chart sources are always UCDP + OHCHR/OCHA — those are the chart data architecture.
     # The baseline figures are themselves derived from UCDP/OHCHR/OCHA at a fixed point in
     # time, so even when live fetches fail the attribution stays correct.
     ucdp_ohchr_active = [s for s in sources_used if s not in ("ACLED", "Baseline (live sources unavailable)")]
-    chart_sources = ucdp_ohchr_active if ucdp_ohchr_active else ["UCDP", "OHCHR/OCHA"]
+    chart_sources = ucdp_ohchr_active if ucdp_ohchr_active else ["UCDP", "OHCHR/OCHA", "Hengaw/IHR"]
 
     # ── 6. Persist ────────────────────────────────────────────────────────────
     await db.conflicts.delete_many({})
