@@ -66,7 +66,7 @@ const ConflictGlobe = () => {
 
   return (
     <div
-      className="flex flex-col items-center justify-center mb-6"
+      className="flex flex-col items-center justify-center"
       data-testid="conflict-globe"
     >
       <div className="relative" style={{ width: 350, height: 350 }}>

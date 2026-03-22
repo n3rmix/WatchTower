@@ -15,13 +15,37 @@ const INTENSITY_STYLES = {
   Low:      "bg-zinc-800/50 border-zinc-700 text-zinc-400",
 };
 
+const INTENSITY_DESCRIPTIONS = {
+  Critical: "Extremely high activity — a large number of documented incidents with severe casualties per event. Indicates full-scale, ongoing armed conflict.",
+  High:     "Significant ongoing violence with substantial documented casualties. Regular armed engagements with notable humanitarian impact.",
+  Medium:   "Moderate conflict activity. Armed clashes are recorded but intensity remains below major-war thresholds.",
+  Low:      "Limited documented events or early-stage conflict. Incident frequency and casualty counts are relatively low.",
+};
+
 const IntensityBadge = ({ tier = "Low" }) => (
-  <span
-    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-sm text-[10px] font-mono uppercase tracking-wider border ${INTENSITY_STYLES[tier] ?? INTENSITY_STYLES.Low}`}
-    title="Conflict intensity: derived from UCDP event count and death rate"
-  >
-    {tier}
-  </span>
+  <div className="relative group inline-flex">
+    <span
+      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-sm text-[10px] font-mono uppercase tracking-wider border cursor-default ${INTENSITY_STYLES[tier] ?? INTENSITY_STYLES.Low}`}
+    >
+      {tier}
+    </span>
+    {/* Custom tooltip */}
+    <div className="absolute bottom-full left-0 mb-2 hidden group-hover:block z-50 w-60 pointer-events-none">
+      <div className="bg-zinc-900 border border-zinc-700 rounded-sm shadow-xl p-3 text-left">
+        <p className={`text-xs font-mono font-semibold uppercase tracking-wider mb-1 ${(INTENSITY_STYLES[tier] ?? INTENSITY_STYLES.Low).split(" ").find(c => c.startsWith("text-"))}`}>
+          {tier} Intensity
+        </p>
+        <p className="text-xs text-zinc-300 leading-relaxed">
+          {INTENSITY_DESCRIPTIONS[tier] ?? INTENSITY_DESCRIPTIONS.Low}
+        </p>
+        <p className="text-[10px] text-zinc-600 mt-2 pt-2 border-t border-zinc-800 font-mono leading-relaxed">
+          Derived from UCDP GED event count and deaths-per-event ratio.
+        </p>
+      </div>
+      {/* Arrow */}
+      <div className="w-2 h-2 bg-zinc-900 border-r border-b border-zinc-700 rotate-45 ml-3 -mt-1" />
+    </div>
+  </div>
 );
 
 const ConflictTable = ({ conflicts, dataLastFetch }) => {

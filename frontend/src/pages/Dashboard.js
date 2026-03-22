@@ -8,6 +8,7 @@ import NewsTicker from "../components/NewsTicker";
 import StatCard from "../components/StatCard";
 import ConflictTable from "../components/ConflictTable";
 import ConflictGlobe from "../components/ConflictGlobe";
+import ConflictHeatmap from "../components/ConflictHeatmap";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -181,8 +182,11 @@ const Dashboard = () => {
           />
         </div>
 
-        {/* Spinning Globe */}
-        <ConflictGlobe />
+        {/* Globe + Heatmap */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+          <ConflictGlobe />
+          <ConflictHeatmap conflicts={conflicts} />
+        </div>
 
         {/* Active Conflicts Count */}
         <div className="tactical-card p-4 mb-6 corner-accent" data-testid="active-conflicts-banner">
