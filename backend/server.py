@@ -92,6 +92,7 @@ class ConflictData(BaseModel):
     total_deaths: int
     deaths_low: Optional[int] = None
     deaths_high: Optional[int] = None
+    intensity_tier: str = "Low"
     civilian_deaths: int
     military_deaths: int
     children_deaths: int
@@ -145,10 +146,11 @@ async def fetch_ucdp_deaths_for_country(
     """Fetch cumulative deaths and actor names from the UCDP GED API for a country.
 
     Returns a dict with keys:
-      total   – sum of best-estimate deaths across all events
-      low     – sum of low-estimate deaths
-      high    – sum of high-estimate deaths
-      parties – sorted list of unique side_a / side_b actor names
+      total       – sum of best-estimate deaths across all events
+      low         – sum of low-estimate deaths
+      high        – sum of high-estimate deaths
+      event_count – total number of GED events
+      parties     – sorted list of unique side_a / side_b actor names
 
     country_id is a comma-separated string of Gleditsch-Ward country codes,
     e.g. '369' for Ukraine or '678,679' for Yemen (spans two GW codes).
@@ -162,7 +164,7 @@ async def fetch_ucdp_deaths_for_country(
             headers["x-ucdp-access-token"] = api_key
         page_size = 1000
         page = 1
-        total = low = high = 0
+        total = low = high = event_count = 0
         parties: set = set()
         while True:
             params = {"pagesize": page_size, "page": page, "Country": country_id}
@@ -176,6 +178,7 @@ async def fetch_ucdp_deaths_for_country(
                 results = data.get("Result", [])
                 if not results:
                     break
+                event_count += len(results)
                 for event in results:
                     total += int(event.get("best", 0) or 0)
                     low   += int(event.get("low",  0) or 0)
@@ -189,8 +192,11 @@ async def fetch_ucdp_deaths_for_country(
                 page += 1
         if total <= 0:
             return None
-        logger.info(f"UCDP: country_id={country_id} → {total} deaths (low={low}, high={high}, {len(parties)} actors, {page} page(s))")
-        return {"total": total, "low": low, "high": high, "parties": sorted(parties)}
+        logger.info(
+            f"UCDP: country_id={country_id} → {total} deaths "
+            f"(low={low}, high={high}, {event_count} events, {len(parties)} actors, {page} page(s))"
+        )
+        return {"total": total, "low": low, "high": high, "event_count": event_count, "parties": sorted(parties)}
     except Exception as e:
         logger.warning(f"UCDP fetch error for country_id={country_id}: {e}")
     return None
@@ -215,6 +221,35 @@ async def fetch_ucdp_data() -> Dict[str, Dict]:
                 results[key] = item
     logger.info(f"UCDP fetch complete: {len(results)}/{len(UCDP_COUNTRY_MAP)} countries updated")
     return results
+
+
+def compute_intensity_tier(event_count: int, total_deaths: int) -> str:
+    """Derive a conflict intensity tier from GED event count and total deaths.
+
+    When UCDP event data is available the score combines activity volume
+    (events) and lethality (deaths-per-event).  When only deaths are known
+    (no UCDP coverage) a deaths-only threshold is used as a fallback.
+
+    Tiers: Critical · High · Medium · Low
+    """
+    if event_count > 0:
+        death_rate = total_deaths / event_count          # deaths per event
+        score = (event_count / 100) + (death_rate * 2)  # weighted composite
+        if score >= 50 or total_deaths >= 100_000:
+            return "Critical"
+        if score >= 10 or total_deaths >= 20_000:
+            return "High"
+        if score >= 2 or total_deaths >= 5_000:
+            return "Medium"
+        return "Low"
+    # Deaths-only fallback (no UCDP coverage)
+    if total_deaths >= 100_000:
+        return "Critical"
+    if total_deaths >= 20_000:
+        return "High"
+    if total_deaths >= 5_000:
+        return "Medium"
+    return "Low"
 
 
 async def fetch_acled_deaths_for_country(
@@ -613,10 +648,12 @@ def _build_records(
         record['deaths_high'] = None
 
         # Apply UCDP uncertainty bands and live actor names when available
+        ucdp_event_count = 0
         if ucdp_rich and country in ucdp_rich:
             ucdp = ucdp_rich[country]
             record['deaths_low'] = ucdp.get('low') or None
             record['deaths_high'] = ucdp.get('high') or None
+            ucdp_event_count = ucdp.get('event_count', 0) or 0
             if ucdp.get('parties'):
                 record['parties_involved'] = ucdp['parties']
 
@@ -665,6 +702,9 @@ def _build_records(
                 record['civilian_deaths'] = int(iran_total * civ_ratio)
                 record['military_deaths'] = int(iran_total * mil_ratio)
                 record['children_deaths'] = int(iran_total * child_ratio)
+
+        # Compute intensity tier after all death figures are finalised
+        record['intensity_tier'] = compute_intensity_tier(ucdp_event_count, record['total_deaths'])
 
         conflicts.append(record)
     return conflicts
