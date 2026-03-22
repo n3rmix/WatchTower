@@ -37,10 +37,19 @@ WatchTower is a real-time conflict monitoring system that aggregates casualty da
   - Transparent data source attribution per conflict row
 
 - **Interactive Data Visualizations**
-  - Spinning WebGL globe with pulsing red/orange markers at all 9 active conflict regions
+  - Spinning WebGL globe with pulsing markers at all 9 active conflict regions, alongside a **casualty heatmap** — a 9-conflict × 4-metric grid (Total / Civilian / Military / Children) with cells coloured black→red by column-normalised intensity and hover tooltips showing raw counts and percentage of column maximum
   - Casualty breakdown pie chart (civilian vs military) — sourced exclusively from UCDP + OHCHR/OCHA
   - Deaths by country bar chart — sourced exclusively from UCDP + OHCHR/OCHA
   - Responsive design with tactical/situation room aesthetic
+
+- **Actor Accountability Tracker** (`/actor-tracker`)
+  - Dedicated view for One-Sided Violence perpetrator profiling backed by the UCDP datasets
+  - **Step 1 — Configure:** Select a country (all 8 UCDP-covered conflicts) and any combination of years (2015–2024 multi-select)
+  - **Step 2 — Actors:** Queries `GET /api/onesided` and lists every perpetrator found in the UCDP One-Sided Violence dataset for that country/year range — actor name, UCDP `actor_id`, total civilian deaths, uncertainty range, and years active
+  - **Step 3 — Profile:** Click any actor to cross-reference against `GET /api/gedevents` (`TypeOfViolence=3`) and generate a full accountability profile:
+    - Summary stats: GED event count, total deaths, civilian deaths, verified source organisations
+    - Per-year deaths bar chart (Recharts)
+    - Paginated evidence table: date, location (ADM1/ADM2), best/low/high estimates, civilian deaths, source office, and clickable `source_article` links — all fields required for CTI advisories, sanctions screening, and ICC referral documentation
 
 - **Live News Ticker**
   - 60+ articles from 12+ geopolitical news sources
@@ -242,6 +251,65 @@ Aggregated casualty statistics from the full conflict dataset.
 ### `GET /api/chart-stats`
 Aggregated statistics from the UCDP + OHCHR/OCHA dataset only. Used by the Casualty Breakdown chart.
 
+### `GET /api/onesided?gwno=&years=`
+Queries the **UCDP One-Sided Violence dataset** for a country and multi-year range. Returns actors who perpetrate systematic violence against civilians, aggregated across all requested years.
+
+| Parameter | Description |
+|-----------|-------------|
+| `gwno` | Gleditsch-Ward code(s), comma-separated (e.g. `369` for Ukraine, `678,679` for Yemen) |
+| `years` | Comma-separated year integers, e.g. `2020,2021,2022` |
+
+```json
+{
+  "total_actors": 3,
+  "actors": [
+    {
+      "actor_id": "1234",
+      "actor_name": "Russian Armed Forces",
+      "years_active": [2022, 2023],
+      "total_deaths": 8200,
+      "deaths_low": 6100,
+      "deaths_high": 10400,
+      "per_year": { "2022": 5300, "2023": 2900 }
+    }
+  ]
+}
+```
+
+### `GET /api/gedevents?actor=&gwno=&years=`
+Cross-references an actor (identified from `/api/onesided`) against the **UCDP Georeferenced Event Dataset** filtered to `TypeOfViolence=3` (one-sided violence). Returns up to 1 000 event records sorted newest-first, deduplicated by event ID, with full source traceability for CTI advisories and compliance reporting.
+
+| Parameter | Description |
+|-----------|-------------|
+| `actor` | Actor name string (`side_a` from the onesided dataset) |
+| `gwno` | Optional GW code(s) to narrow by country |
+| `years` | Optional comma-separated years |
+
+```json
+{
+  "total_events": 47,
+  "total_deaths": 1830,
+  "civilian_deaths": 1830,
+  "source_offices": ["OHCHR", "UN News", "Reuters"],
+  "events": [
+    {
+      "id": "12345",
+      "date_start": "2023-04-12",
+      "date_end": "2023-04-12",
+      "adm_1": "Kharkivska",
+      "adm_2": "Kharkiv",
+      "best": 12,
+      "low": 9,
+      "high": 15,
+      "deaths_civilians": 12,
+      "source_office": "OHCHR",
+      "source_article": "https://...",
+      "source_headline": "UN verifies 12 civilian deaths in Kharkiv strike"
+    }
+  ]
+}
+```
+
 ### `GET /api/last-update`
 Metadata about the most recent data fetch.
 
@@ -284,13 +352,19 @@ Every hour (APScheduler):
     ├─ Persist both datasets to MongoDB
     └─ Store fetch timestamp, sources, chart_sources in system_metadata
 
-Frontend polls every 5 min:
+Frontend polls every 5 min (Dashboard):
     ├─ GET /api/conflicts       → detail table
     ├─ GET /api/chart-conflicts → Deaths by Country chart
     ├─ GET /api/stats           → stat cards
     ├─ GET /api/chart-stats     → Casualty Breakdown chart
     ├─ GET /api/news            → news ticker
     └─ GET /api/last-update     → header timestamps + source pills
+
+Actor Accountability Tracker (/actor-tracker) — on demand:
+    ├─ GET /api/onesided?gwno=&years=
+    │     └─ UCDP One-Sided Violence dataset → actor list
+    └─ GET /api/gedevents?actor=&gwno=&years=
+          └─ UCDP GED (TypeOfViolence=3) → event-level evidence table
 ```
 
 ---
@@ -315,10 +389,12 @@ Contributions are welcome. Areas for improvement:
 **High Priority**
 - [ ] Historical trend charts
 - [x] World map / globe visualization
+- [x] Casualty heatmap (conflicts × categories)
+- [x] Actor accountability tracker (UCDP One-Sided Violence + GED cross-reference)
 - [ ] Conflict timeline view
 
 **Medium Priority**
-- [ ] Export functionality (PDF/CSV)
+- [ ] Export functionality (PDF/CSV) — especially useful for Actor Tracker compliance reports
 - [ ] Advanced filtering (region, date, severity)
 - [ ] Data source confidence indicators
 - [ ] Multi-language support
