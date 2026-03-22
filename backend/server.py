@@ -1199,296 +1199,169 @@ async def get_chart_stats():
     }
 
 
-# ─── Longitudinal Tracker helpers ─────────────────────────────────────────────
+# ─── Humanitarian Clock ────────────────────────────────────────────────────────
 
-async def _fetch_all_battledeaths(
+async def _fetch_clock_events(
     session: aiohttp.ClientSession,
     hdrs: Dict[str, str],
-    conflict_id: str,
+    country_code: str,
+    start_date: str,
+    end_date: str,
 ) -> List[Dict]:
-    """Paginate through every UCDP battle-death record for a single conflict."""
-    url = f"{UCDP_API_BASE}/battledeaths/{UCDP_VERSION}"
-    all_records: List[Dict] = []
+    """Fetch all GED Candidate events for a country over a date range."""
+    url = f"{UCDP_API_BASE}/gedevents/{UCDP_CANDIDATE_VERSION}"
+    all_events: List[Dict] = []
     pg = 1
     while True:
         try:
             async with session.get(
                 url,
-                params={"Conflict": conflict_id, "pagesize": 1000, "page": pg},
+                params={
+                    "Country":   country_code,
+                    "StartDate": start_date,
+                    "EndDate":   end_date,
+                    "pagesize":  1000,
+                    "page":      pg,
+                },
                 headers=hdrs,
-                timeout=aiohttp.ClientTimeout(total=30),
+                timeout=aiohttp.ClientTimeout(total=45),
             ) as resp:
                 if resp.status != 200:
                     logger.warning(
-                        f"Battledeaths HTTP {resp.status} conflict={conflict_id} page={pg}"
+                        f"Clock events HTTP {resp.status} country={country_code} page={pg}"
                     )
                     break
                 data = await resp.json()
                 results = data.get("Result", [])
-                logger.info(
-                    f"Battledeaths conflict={conflict_id} page={pg}: "
-                    f"{len(results)} records (TotalCount={data.get('TotalCount')})"
-                )
-                all_records.extend(results)
+                all_events.extend(results)
                 if len(results) < 1000:
                     break
                 pg += 1
         except Exception as exc:
-            logger.warning(f"Battledeaths fetch error conflict={conflict_id}: {exc}")
+            logger.warning(f"Clock events error country={country_code}: {exc}")
             break
-    return all_records
+    return all_events
 
 
-async def _fetch_dyadic(
-    session: aiohttp.ClientSession,
-    hdrs: Dict[str, str],
-    conflict_id: str,
-) -> List[Dict]:
-    """Fetch dyadic party records for a conflict."""
-    url = f"{UCDP_API_BASE}/dyadic/{UCDP_VERSION}"
-    try:
-        async with session.get(
-            url,
-            params={"Conflict": conflict_id, "pagesize": 200},
-            headers=hdrs,
-            timeout=aiohttp.ClientTimeout(total=20),
-        ) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                return data.get("Result", [])
-            logger.warning(f"Dyadic HTTP {resp.status} conflict={conflict_id}")
-    except Exception as exc:
-        logger.warning(f"Dyadic fetch error conflict={conflict_id}: {exc}")
-    return []
+@api_router.get("/humanitarian-clock")
+async def get_humanitarian_clock(
+    threshold: int = 25,
+    lookback_days: int = 90,
+):
+    """Humanitarian Clock — Time-Since-Escalation.
 
+    For each monitored conflict, fetches GED Candidate events over the past
+    `lookback_days` and slides a 7-day window backward from today to find the
+    most recent period where battle deaths exceeded `threshold`.
 
-@api_router.get("/longitudinal/search")
-async def search_longitudinal_conflicts(q: str = ""):
-    """Search UCDP conflicts by name via the dyadic dataset."""
-    q = q.strip()
-    if len(q) < 2:
-        raise HTTPException(status_code=400, detail="Query must be at least 2 characters")
+    Returns conflicts sorted by days_since_escalation ascending so the most
+    urgent appear first. Conflicts near zero are actively escalating; those
+    approaching lookback_days are cooling.
 
-    api_key = get_ucdp_api_key()
-    ucdp_hdrs: Dict[str, str] = {}
-    if api_key:
-        ucdp_hdrs["x-ucdp-access-token"] = api_key
-
-    url = f"{UCDP_API_BASE}/dyadic/{UCDP_VERSION}"
-    results: List[Dict] = []
-
-    async with aiohttp.ClientSession(headers={"User-Agent": "WatchTower/1.0"}) as session:
-        try:
-            async with session.get(
-                url,
-                params={"ConflictName": q, "pagesize": 50},
-                headers=ucdp_hdrs,
-                timeout=aiohttp.ClientTimeout(total=20),
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    seen: set = set()
-                    for rec in data.get("Result", []):
-                        cid = str(
-                            rec.get("conflict_new_id") or rec.get("conflict_id") or ""
-                        )
-                        cname = rec.get("conflict_name", "")
-                        if cid and cid not in seen:
-                            seen.add(cid)
-                            results.append({
-                                "conflict_id":   cid,
-                                "conflict_name": cname,
-                                "location":      rec.get("location", ""),
-                                "start_date":    rec.get("start_date", ""),
-                            })
-                else:
-                    logger.warning(f"Longitudinal search HTTP {resp.status} q={q!r}")
-        except Exception as exc:
-            logger.warning(f"Longitudinal search error q={q!r}: {exc}")
-
-    return {"results": results, "query": q}
-
-
-@api_router.get("/longitudinal")
-async def get_longitudinal_tracker(conflict_id: str):
-    """Long-Run Human Cost Longitudinal Tracker.
-
-    Fetches every available year of UCDP battle deaths (v25.1) for a single
-    conflict, cross-referenced with dyadic data for combatant-party detail.
-    Returns a year-by-year timeline with compounding cumulative casualties
-    from 1989 onward — the full human cost since inception.
-
-    conflict_id – UCDP conflict_new_id (numeric string, e.g. "432")
+    threshold    – min battle deaths in a 7-day window to qualify as significant
+    lookback_days – how far back to search (default 90)
     """
-    conflict_id = conflict_id.strip()
-    if not conflict_id:
-        raise HTTPException(status_code=400, detail="conflict_id is required")
-
     api_key = get_ucdp_api_key()
     ucdp_hdrs: Dict[str, str] = {}
     if api_key:
         ucdp_hdrs["x-ucdp-access-token"] = api_key
 
+    today      = datetime.now(timezone.utc).date()
+    start_date = (today - timedelta(days=lookback_days)).isoformat()
+    end_date   = today.isoformat()
+
     async with aiohttp.ClientSession(headers={"User-Agent": "WatchTower/1.0"}) as session:
-        bd_records, dyadic_records = await asyncio.gather(
-            _fetch_all_battledeaths(session, ucdp_hdrs, conflict_id),
-            _fetch_dyadic(session, ucdp_hdrs, conflict_id),
-        )
+        country_items  = list(UCDP_COUNTRY_MAP.items())
+        raw_results    = await asyncio.gather(*[
+            _fetch_clock_events(session, ucdp_hdrs, gw_code, start_date, end_date)
+            for _, gw_code in country_items
+        ])
 
-    if not bd_records:
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                f"No battle deaths data found for conflict_id={conflict_id}. "
-                "Verify the UCDP conflict_new_id is correct."
-            ),
-        )
-
-    # ── Aggregate deaths by year AND by dyad ──────────────────────────────────
-    year_map: Dict[int, Dict] = {}
-    dyad_year_map: Dict[str, Dict[int, Dict]] = {}
-
-    for rec in bd_records:
-        try:
-            yr = int(rec.get("year", 0))
-        except (TypeError, ValueError):
-            continue
-        best = int(rec.get("bd_best") or rec.get("best") or 0)
-        low  = int(rec.get("bd_low")  or rec.get("low")  or 0)
-        high = int(rec.get("bd_high") or rec.get("high") or 0)
-
-        # Conflict-level year totals
-        if yr not in year_map:
-            year_map[yr] = {"best": 0, "low": 0, "high": 0}
-        year_map[yr]["best"] += best
-        year_map[yr]["low"]  += low
-        year_map[yr]["high"] += high
-
-        # Dyad-level year totals
-        dname = (
-            rec.get("dyad_name")
-            or rec.get("dyad_new_name")
-            or f"Dyad {rec.get('dyad_new_id') or rec.get('dyad_id') or '?'}"
-        )
-        if dname not in dyad_year_map:
-            dyad_year_map[dname] = {}
-        if yr not in dyad_year_map[dname]:
-            dyad_year_map[dname][yr] = {"best": 0, "low": 0, "high": 0}
-        dyad_year_map[dname][yr]["best"] += best
-        dyad_year_map[dname][yr]["low"]  += low
-        dyad_year_map[dname][yr]["high"] += high
-
-    years = sorted(year_map.keys())
-    cum_best = cum_low = cum_high = 0
-    timeline: List[Dict] = []
-    for yr in years:
-        d = year_map[yr]
-        cum_best += d["best"]
-        cum_low  += d["low"]
-        cum_high += d["high"]
-        timeline.append({
-            "year":            yr,
-            "best":            d["best"],
-            "low":             d["low"],
-            "high":            d["high"],
-            "cumulative_best": cum_best,
-            "cumulative_low":  cum_low,
-            "cumulative_high": cum_high,
-        })
-
-    # ── Build per-dyad breakdown ───────────────────────────────────────────────
-    dyadic_by_name: Dict[str, Dict] = {
-        dr.get("dyad_name", ""): dr
-        for dr in dyadic_records
-        if dr.get("dyad_name")
-    }
-
-    dyad_breakdown: List[Dict] = []
-    for dname, yr_data in dyad_year_map.items():
-        dyad_years = sorted(yr_data.keys())
-        dcum = 0
-        dyad_tl: List[Dict] = []
-        for yr in dyad_years:
-            d = yr_data[yr]
-            dcum += d["best"]
-            dyad_tl.append({
-                "year":            yr,
-                "best":            d["best"],
-                "low":             d["low"],
-                "high":            d["high"],
-                "cumulative_best": dcum,
+    conflicts: List[Dict] = []
+    for (country, _), events in zip(country_items, raw_results):
+        if not events:
+            conflicts.append({
+                "country":               country,
+                "conflict_name":         country,
+                "days_since_escalation": lookback_days,
+                "last_escalation_date":  None,
+                "recent_best_deaths":    0,
+                "total_events":          0,
+                "total_best_deaths":     0,
+                "status":                "quiet",
             })
-        dtotal   = sum(d["best"] for d in yr_data.values())
-        dpeak_yr = max(yr_data.keys(), key=lambda y: yr_data[y]["best"])
-        dr       = dyadic_by_name.get(dname, {})
-        dyad_breakdown.append({
-            "dyad_name":   dname,
-            "dyad_id":     str(dr.get("dyad_new_id") or dr.get("dyad_id") or ""),
-            "side_a":      dr.get("side_a", ""),
-            "side_b":      dr.get("side_b", ""),
-            "start_date":  dr.get("start_date", ""),
-            "ep_end_date": dr.get("ep_end_date", ""),
-            "total_best":  dtotal,
-            "peak_year":   dpeak_yr,
-            "peak_deaths": yr_data[dpeak_yr]["best"],
-            "first_year":  dyad_years[0],
-            "last_year":   dyad_years[-1],
-            "timeline":    dyad_tl,
+            continue
+
+        # Build a daily death-count map  (date_str → total best)
+        daily: Dict[str, int] = {}
+        for ev in events:
+            ds = (ev.get("date_start") or "")[:10]
+            if ds:
+                daily[ds] = daily.get(ds, 0) + int(ev.get("best") or 0)
+
+        dates = sorted(daily.keys(), reverse=True)   # newest first
+
+        # Slide a 7-day window from most recent date backward, find first
+        # window whose cumulative deaths >= threshold
+        WINDOW = 7
+        last_escalation_date: Optional[str] = None
+        last_deaths = 0
+
+        for anchor in dates:
+            try:
+                anchor_dt = datetime.fromisoformat(anchor).date()
+            except ValueError:
+                continue
+            window_start = anchor_dt - timedelta(days=WINDOW)
+            w_total = sum(
+                v for d, v in daily.items()
+                if window_start <= datetime.fromisoformat(d).date() <= anchor_dt
+            )
+            if w_total >= threshold:
+                last_escalation_date = anchor
+                last_deaths = w_total
+                break
+
+        if last_escalation_date:
+            try:
+                days_since = (today - datetime.fromisoformat(last_escalation_date).date()).days
+            except ValueError:
+                days_since = lookback_days
+        else:
+            days_since = lookback_days
+
+        days_since = min(days_since, lookback_days)
+
+        conflict_name = (events[0].get("conflict_name") or country)
+        total_best    = sum(int(ev.get("best") or 0) for ev in events)
+        status = (
+            "escalating" if days_since <= 7 else
+            "watch"      if days_since <= 21 else
+            "cooling"
+        )
+
+        conflicts.append({
+            "country":               country,
+            "conflict_name":         conflict_name,
+            "days_since_escalation": days_since,
+            "last_escalation_date":  last_escalation_date,
+            "recent_best_deaths":    last_deaths,
+            "total_events":          len(events),
+            "total_best_deaths":     total_best,
+            "status":                status,
         })
-    dyad_breakdown.sort(key=lambda d: d["total_best"], reverse=True)
 
-    # ── Conflict metadata from dyadic records ─────────────────────────────────
-    conflict_name    = ""
-    location         = ""
-    type_of_conflict = None
-    start_year: Optional[str] = None
-    dyads: List[Dict] = []
-
-    if dyadic_records:
-        first         = dyadic_records[0]
-        conflict_name = first.get("conflict_name", "")
-        location      = first.get("location", "")
-        type_of_conflict = first.get("type_of_conflict")
-        raw_start     = first.get("start_date", "")
-        start_year    = raw_start[:4] if raw_start else None
-        for dr in dyadic_records:
-            dname = dr.get("dyad_name", "")
-            if dname:
-                dyads.append({
-                    "dyad_name":        dname,
-                    "side_a":           dr.get("side_a", ""),
-                    "side_b":           dr.get("side_b", ""),
-                    "start_date":       dr.get("start_date", ""),
-                    "ep_end_date":      dr.get("ep_end_date", ""),
-                    "type_of_conflict": dr.get("type_of_conflict"),
-                })
-
-    total_best = sum(t["best"] for t in timeline)
-    total_low  = sum(t["low"]  for t in timeline)
-    total_high = sum(t["high"] for t in timeline)
-    peak = max(timeline, key=lambda t: t["best"]) if timeline else None
-
+    conflicts.sort(key=lambda c: c["days_since_escalation"])
     logger.info(
-        f"Longitudinal: conflict={conflict_id} name={conflict_name!r} "
-        f"years={len(years)} total_best={total_best}"
+        f"Humanitarian clock: {len(conflicts)} conflicts, "
+        f"threshold={threshold}, lookback={lookback_days}d"
     )
 
     return {
-        "conflict_id":       conflict_id,
-        "conflict_name":     conflict_name,
-        "location":          location,
-        "type_of_conflict":  type_of_conflict,
-        "start_year":        start_year or (str(years[0]) if years else None),
-        "span":              f"{years[0]}–{years[-1]}" if len(years) >= 2 else (str(years[0]) if years else ""),
-        "total_years":       len(years),
-        "total_deaths_best": total_best,
-        "total_deaths_low":  total_low,
-        "total_deaths_high": total_high,
-        "peak_year":         peak["year"] if peak else None,
-        "peak_deaths":       peak["best"] if peak else 0,
-        "dyads":             dyads,
-        "dyad_breakdown":    dyad_breakdown,
-        "timeline":          timeline,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "lookback_days": lookback_days,
+        "threshold":     threshold,
+        "conflicts":     conflicts,
     }
 
 
