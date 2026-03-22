@@ -13,7 +13,8 @@ import {
   ArrowLeft,
 } from "lucide-react";
 
-const API = process.env.REACT_APP_API_URL || "http://localhost:8001/api";
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+const API = `${BACKEND_URL}/api`;
 
 const fmtNum = (n) => (n ?? 0).toLocaleString();
 const fmtPct = (p) =>
