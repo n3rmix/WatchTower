@@ -1199,6 +1199,236 @@ async def get_chart_stats():
     }
 
 
+# ─── Longitudinal Tracker helpers ─────────────────────────────────────────────
+
+async def _fetch_all_battledeaths(
+    session: aiohttp.ClientSession,
+    hdrs: Dict[str, str],
+    conflict_id: str,
+) -> List[Dict]:
+    """Paginate through every UCDP battle-death record for a single conflict."""
+    url = f"{UCDP_API_BASE}/battledeaths/{UCDP_VERSION}"
+    all_records: List[Dict] = []
+    pg = 1
+    while True:
+        try:
+            async with session.get(
+                url,
+                params={"Conflict": conflict_id, "pagesize": 1000, "page": pg},
+                headers=hdrs,
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                if resp.status != 200:
+                    logger.warning(
+                        f"Battledeaths HTTP {resp.status} conflict={conflict_id} page={pg}"
+                    )
+                    break
+                data = await resp.json()
+                results = data.get("Result", [])
+                logger.info(
+                    f"Battledeaths conflict={conflict_id} page={pg}: "
+                    f"{len(results)} records (TotalCount={data.get('TotalCount')})"
+                )
+                all_records.extend(results)
+                if len(results) < 1000:
+                    break
+                pg += 1
+        except Exception as exc:
+            logger.warning(f"Battledeaths fetch error conflict={conflict_id}: {exc}")
+            break
+    return all_records
+
+
+async def _fetch_dyadic(
+    session: aiohttp.ClientSession,
+    hdrs: Dict[str, str],
+    conflict_id: str,
+) -> List[Dict]:
+    """Fetch dyadic party records for a conflict."""
+    url = f"{UCDP_API_BASE}/dyadic/{UCDP_VERSION}"
+    try:
+        async with session.get(
+            url,
+            params={"Conflict": conflict_id, "pagesize": 200},
+            headers=hdrs,
+            timeout=aiohttp.ClientTimeout(total=20),
+        ) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                return data.get("Result", [])
+            logger.warning(f"Dyadic HTTP {resp.status} conflict={conflict_id}")
+    except Exception as exc:
+        logger.warning(f"Dyadic fetch error conflict={conflict_id}: {exc}")
+    return []
+
+
+@api_router.get("/longitudinal/search")
+async def search_longitudinal_conflicts(q: str = ""):
+    """Search UCDP conflicts by name via the dyadic dataset."""
+    q = q.strip()
+    if len(q) < 2:
+        raise HTTPException(status_code=400, detail="Query must be at least 2 characters")
+
+    api_key = get_ucdp_api_key()
+    ucdp_hdrs: Dict[str, str] = {}
+    if api_key:
+        ucdp_hdrs["x-ucdp-access-token"] = api_key
+
+    url = f"{UCDP_API_BASE}/dyadic/{UCDP_VERSION}"
+    results: List[Dict] = []
+
+    async with aiohttp.ClientSession(headers={"User-Agent": "WatchTower/1.0"}) as session:
+        try:
+            async with session.get(
+                url,
+                params={"ConflictName": q, "pagesize": 50},
+                headers=ucdp_hdrs,
+                timeout=aiohttp.ClientTimeout(total=20),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    seen: set = set()
+                    for rec in data.get("Result", []):
+                        cid = str(
+                            rec.get("conflict_new_id") or rec.get("conflict_id") or ""
+                        )
+                        cname = rec.get("conflict_name", "")
+                        if cid and cid not in seen:
+                            seen.add(cid)
+                            results.append({
+                                "conflict_id":   cid,
+                                "conflict_name": cname,
+                                "location":      rec.get("location", ""),
+                                "start_date":    rec.get("start_date", ""),
+                            })
+                else:
+                    logger.warning(f"Longitudinal search HTTP {resp.status} q={q!r}")
+        except Exception as exc:
+            logger.warning(f"Longitudinal search error q={q!r}: {exc}")
+
+    return {"results": results, "query": q}
+
+
+@api_router.get("/longitudinal")
+async def get_longitudinal_tracker(conflict_id: str):
+    """Long-Run Human Cost Longitudinal Tracker.
+
+    Fetches every available year of UCDP battle deaths (v25.1) for a single
+    conflict, cross-referenced with dyadic data for combatant-party detail.
+    Returns a year-by-year timeline with compounding cumulative casualties
+    from 1989 onward — the full human cost since inception.
+
+    conflict_id – UCDP conflict_new_id (numeric string, e.g. "432")
+    """
+    conflict_id = conflict_id.strip()
+    if not conflict_id:
+        raise HTTPException(status_code=400, detail="conflict_id is required")
+
+    api_key = get_ucdp_api_key()
+    ucdp_hdrs: Dict[str, str] = {}
+    if api_key:
+        ucdp_hdrs["x-ucdp-access-token"] = api_key
+
+    async with aiohttp.ClientSession(headers={"User-Agent": "WatchTower/1.0"}) as session:
+        bd_records, dyadic_records = await asyncio.gather(
+            _fetch_all_battledeaths(session, ucdp_hdrs, conflict_id),
+            _fetch_dyadic(session, ucdp_hdrs, conflict_id),
+        )
+
+    if not bd_records:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"No battle deaths data found for conflict_id={conflict_id}. "
+                "Verify the UCDP conflict_new_id is correct."
+            ),
+        )
+
+    # ── Aggregate deaths by year ───────────────────────────────────────────────
+    year_map: Dict[int, Dict] = {}
+    for rec in bd_records:
+        try:
+            yr = int(rec.get("year", 0))
+        except (TypeError, ValueError):
+            continue
+        if yr not in year_map:
+            year_map[yr] = {"best": 0, "low": 0, "high": 0}
+        year_map[yr]["best"] += int(rec.get("bd_best") or rec.get("best") or 0)
+        year_map[yr]["low"]  += int(rec.get("bd_low")  or rec.get("low")  or 0)
+        year_map[yr]["high"] += int(rec.get("bd_high") or rec.get("high") or 0)
+
+    years = sorted(year_map.keys())
+    cum_best = cum_low = cum_high = 0
+    timeline: List[Dict] = []
+    for yr in years:
+        d = year_map[yr]
+        cum_best += d["best"]
+        cum_low  += d["low"]
+        cum_high += d["high"]
+        timeline.append({
+            "year":            yr,
+            "best":            d["best"],
+            "low":             d["low"],
+            "high":            d["high"],
+            "cumulative_best": cum_best,
+            "cumulative_low":  cum_low,
+            "cumulative_high": cum_high,
+        })
+
+    # ── Conflict metadata from dyadic records ─────────────────────────────────
+    conflict_name    = ""
+    location         = ""
+    type_of_conflict = None
+    start_year: Optional[str] = None
+    dyads: List[Dict] = []
+
+    if dyadic_records:
+        first         = dyadic_records[0]
+        conflict_name = first.get("conflict_name", "")
+        location      = first.get("location", "")
+        type_of_conflict = first.get("type_of_conflict")
+        raw_start     = first.get("start_date", "")
+        start_year    = raw_start[:4] if raw_start else None
+        for dr in dyadic_records:
+            dname = dr.get("dyad_name", "")
+            if dname:
+                dyads.append({
+                    "dyad_name":        dname,
+                    "side_a":           dr.get("side_a", ""),
+                    "side_b":           dr.get("side_b", ""),
+                    "start_date":       dr.get("start_date", ""),
+                    "ep_end_date":      dr.get("ep_end_date", ""),
+                    "type_of_conflict": dr.get("type_of_conflict"),
+                })
+
+    total_best = sum(t["best"] for t in timeline)
+    total_low  = sum(t["low"]  for t in timeline)
+    total_high = sum(t["high"] for t in timeline)
+    peak = max(timeline, key=lambda t: t["best"]) if timeline else None
+
+    logger.info(
+        f"Longitudinal: conflict={conflict_id} name={conflict_name!r} "
+        f"years={len(years)} total_best={total_best}"
+    )
+
+    return {
+        "conflict_id":       conflict_id,
+        "conflict_name":     conflict_name,
+        "location":          location,
+        "type_of_conflict":  type_of_conflict,
+        "start_year":        start_year or (str(years[0]) if years else None),
+        "span":              f"{years[0]}–{years[-1]}" if len(years) >= 2 else (str(years[0]) if years else ""),
+        "total_years":       len(years),
+        "total_deaths_best": total_best,
+        "total_deaths_low":  total_low,
+        "total_deaths_high": total_high,
+        "peak_year":         peak["year"] if peak else None,
+        "peak_deaths":       peak["best"] if peak else 0,
+        "dyads":             dyads,
+        "timeline":          timeline,
+    }
+
+
 # ─── App setup ────────────────────────────────────────────────────────────────
 
 app.include_router(api_router)
