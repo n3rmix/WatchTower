@@ -910,7 +910,13 @@ async def get_chart_conflicts():
 
 @api_router.get("/onesided")
 async def get_onesided_actors(gwno: str, years: str):
-    """Fetch One-Sided Violence perpetrators from the UCDP onesided dataset.
+    """Identify One-Sided Violence perpetrators via the UCDP GED (gedevents) endpoint.
+
+    The dedicated /onesided dataset endpoint proved unreliable (returns empty
+    results regardless of parameters).  This implementation drives the actor
+    list from gedevents filtered to TypeOfViolence=3, which is the same
+    underlying data — events where a state/organised actor killed civilians —
+    aggregated by side_a.
 
     gwno  – Gleditsch-Ward code(s), comma-separated (e.g. "369" or "678,679")
     years – comma-separated year integers, e.g. "2020,2021,2022"
@@ -928,7 +934,7 @@ async def get_onesided_actors(gwno: str, years: str):
         raise HTTPException(status_code=400, detail="No valid years provided")
 
     gwno_list = [g.strip() for g in gwno.split(",") if g.strip()]
-    url = f"{UCDP_API_BASE}/onesided/{UCDP_VERSION}"
+    url = f"{UCDP_API_BASE}/gedevents/{UCDP_VERSION}"
     actors_map: Dict[str, Dict] = {}
 
     async with aiohttp.ClientSession(headers={"User-Agent": "WatchTower/1.0"}) as session:
@@ -936,28 +942,34 @@ async def get_onesided_actors(gwno: str, years: str):
             for year in year_list:
                 pg = 1
                 while True:
-                    # onesided uses "Gwno" (not "Country" like gedevents)
-                    params = {"Gwno": gwno_single, "Year": year, "pagesize": 1000, "page": pg}
+                    params = {
+                        "TypeOfViolence": 3,
+                        "Country": gwno_single,
+                        "Year": year,
+                        "pagesize": 1000,
+                        "page": pg,
+                    }
                     try:
                         async with session.get(
                             url, params=params, headers=ucdp_hdrs,
                             timeout=aiohttp.ClientTimeout(total=30),
                         ) as resp:
                             if resp.status != 200:
-                                logger.warning(f"UCDP onesided HTTP {resp.status} gwno={gwno_single} year={year}")
+                                logger.warning(f"UCDP gedevents(OSV) HTTP {resp.status} gwno={gwno_single} year={year}")
                                 break
                             data = await resp.json()
                             results = data.get("Result", [])
                             if not results:
                                 break
-                            for rec in results:
-                                actor_id = str(rec.get("actor_id") or rec.get("side_a_id") or "")
-                                name = (rec.get("side_a") or "Unknown").strip()
-                                deaths = int(rec.get("best", 0) or 0)
-                                low = int(rec.get("low", 0) or 0)
-                                high = int(rec.get("high", 0) or 0)
-                                rec_year = int(rec.get("year", year))
-                                key = actor_id or name
+                            for ev in results:
+                                name = (ev.get("side_a") or "Unknown").strip()
+                                # side_a_dset_id is the stable actor identifier in GED
+                                actor_id = str(ev.get("side_a_dset_id") or "")
+                                deaths = int(ev.get("best", 0) or 0)
+                                low = int(ev.get("low", 0) or 0)
+                                high = int(ev.get("high", 0) or 0)
+                                rec_year = int(ev.get("year", year))
+                                key = name
                                 if key not in actors_map:
                                     actors_map[key] = {
                                         "actor_id": actor_id,
@@ -980,7 +992,7 @@ async def get_onesided_actors(gwno: str, years: str):
                                 break
                             pg += 1
                     except Exception as exc:
-                        logger.warning(f"UCDP onesided error gwno={gwno_single} year={year}: {exc}")
+                        logger.warning(f"UCDP gedevents(OSV) error gwno={gwno_single} year={year}: {exc}")
                         break
 
     actors = sorted(actors_map.values(), key=lambda x: x["total_deaths"], reverse=True)
