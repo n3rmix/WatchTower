@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useMemo } from "react";
+import { Link } from "react-router-dom";
 import axios from "axios";
 import {
   TrendingUp,
@@ -9,6 +10,7 @@ import {
   ChevronDown,
   ChevronUp,
   Zap,
+  ArrowLeft,
 } from "lucide-react";
 
 const API = process.env.REACT_APP_API_URL || "http://localhost:8001/api";
@@ -369,12 +371,13 @@ export default function SurgeDetector() {
               </p>
             </div>
           </div>
-          <a
-            href="/"
-            className="text-[9px] font-mono text-zinc-600 hover:text-zinc-400 transition-colors uppercase tracking-wider"
+          <Link
+            to="/"
+            className="flex items-center gap-1.5 text-[10px] font-mono text-zinc-500 hover:text-red-400 transition-colors uppercase tracking-wider border border-zinc-800 hover:border-red-800/50 px-3 py-1.5 rounded-sm"
           >
-            ← Dashboard
-          </a>
+            <ArrowLeft className="w-3 h-3" />
+            Dashboard
+          </Link>
         </div>
       </header>
 
