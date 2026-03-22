@@ -27,18 +27,19 @@ const SHORT = {
   "Yemen":          "YEMEN",
   "Ethiopia":       "ETHIOPIA",
   "DRC (Congo)":    "DRC",
+  "Iran":           "IRAN",
 };
 
 // Color by status
 function dotColor(daysSince) {
   if (daysSince <= ZONE_ESCALATING) return "#ef4444";
   if (daysSince <= ZONE_WATCH)      return "#f59e0b";
-  return "#52525b";
+  return "#71717a";
 }
 
 function dotGlow(daysSince) {
-  if (daysSince <= ZONE_ESCALATING) return "rgba(239,68,68,0.35)";
-  if (daysSince <= ZONE_WATCH)      return "rgba(245,158,11,0.25)";
+  if (daysSince <= ZONE_ESCALATING) return "rgba(239,68,68,0.50)";
+  if (daysSince <= ZONE_WATCH)      return "rgba(245,158,11,0.40)";
   return "transparent";
 }
 
@@ -132,15 +133,15 @@ function RadialChart({ conflicts, lookbackDays }) {
           <stop offset="100%" stopColor="#ef4444" stopOpacity="0.00" />
         </radialGradient>
         {/* Glow filter for escalating dots */}
-        <filter id="hcGlow" x="-80%" y="-80%" width="260%" height="260%">
-          <feGaussianBlur stdDeviation="3" result="blur" />
+        <filter id="hcGlow" x="-100%" y="-100%" width="300%" height="300%">
+          <feGaussianBlur stdDeviation="4.5" result="blur" />
           <feMerge>
             <feMergeNode in="blur" />
             <feMergeNode in="SourceGraphic" />
           </feMerge>
         </filter>
-        <filter id="hcGlowAmber" x="-80%" y="-80%" width="260%" height="260%">
-          <feGaussianBlur stdDeviation="2" result="blur" />
+        <filter id="hcGlowAmber" x="-100%" y="-100%" width="300%" height="300%">
+          <feGaussianBlur stdDeviation="3" result="blur" />
           <feMerge>
             <feMergeNode in="blur" />
             <feMergeNode in="SourceGraphic" />
@@ -186,7 +187,7 @@ function RadialChart({ conflicts, lookbackDays }) {
             <line
               x1={CX} y1={CY}
               x2={spokeEnd.x} y2={spokeEnd.y}
-              stroke={isHovered ? "#3f3f46" : "#1f1f23"}
+              stroke={isHovered ? "#52525b" : "#2a2a2e"}
               strokeWidth={isHovered ? 1.5 : 1}
             />
 
@@ -204,7 +205,7 @@ function RadialChart({ conflicts, lookbackDays }) {
             {(isEsc || isWatch) && (
               <circle
                 cx={dot.x} cy={dot.y}
-                r={isEsc ? 9 : 7}
+                r={isEsc ? 14 : 11}
                 fill={dotGlow(c.days_since_escalation)}
               />
             )}
@@ -212,9 +213,12 @@ function RadialChart({ conflicts, lookbackDays }) {
             {/* Main dot */}
             <circle
               cx={dot.x} cy={dot.y}
-              r={isEsc ? 6 : isWatch ? 5 : 4}
+              r={isEsc ? 8 : isWatch ? 7 : 6}
               fill={color}
-              fillOpacity={isEsc ? 1 : 0.85}
+              fillOpacity={isEsc ? 1 : isWatch ? 0.90 : 0.80}
+              stroke={isEsc ? "#fca5a5" : isWatch ? "#fcd34d" : "#a1a1aa"}
+              strokeWidth={isEsc ? 1.5 : 1}
+              strokeOpacity={isEsc ? 0.70 : isWatch ? 0.50 : 0.30}
               filter={isEsc ? "url(#hcGlow)" : isWatch ? "url(#hcGlowAmber)" : undefined}
               style={{ cursor: "pointer" }}
               onMouseEnter={() => setHovered({ conflict: c, x: dot.x, y: dot.y })}
@@ -223,7 +227,7 @@ function RadialChart({ conflicts, lookbackDays }) {
 
             {/* Invisible larger hit area */}
             <circle
-              cx={dot.x} cy={dot.y} r={12}
+              cx={dot.x} cy={dot.y} r={14}
               fill="transparent"
               style={{ cursor: "pointer" }}
               onMouseEnter={() => setHovered({ conflict: c, x: dot.x, y: dot.y })}
@@ -234,8 +238,8 @@ function RadialChart({ conflicts, lookbackDays }) {
             <text
               x={labelPt.x}
               y={labelPt.y + baselineOffset(labelPt.y)}
-              fill={isHovered ? "#a1a1aa" : isEsc ? "#ef4444aa" : isWatch ? "#f59e0b88" : "#3f3f46"}
-              fontSize="7"
+              fill={isHovered ? "#d4d4d8" : isEsc ? "#ef4444cc" : isWatch ? "#f59e0baa" : "#71717a"}
+              fontSize="8"
               fontFamily="monospace"
               letterSpacing="0.04em"
               textAnchor={anchor(labelPt.x)}

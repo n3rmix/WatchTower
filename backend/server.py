@@ -1201,6 +1201,14 @@ async def get_chart_stats():
 
 # ─── Humanitarian Clock ────────────────────────────────────────────────────────
 
+# Iran is excluded from the main UCDP_COUNTRY_MAP (protest/shadow-war events
+# fall outside GED's battle-deaths methodology) but is valid for the clock's
+# "last significant escalation" signal (e.g. Baluchistan, IRGC border ops).
+CLOCK_COUNTRY_MAP: Dict[str, str] = {
+    **UCDP_COUNTRY_MAP,
+    'Iran': '630',
+}
+
 async def _fetch_clock_events(
     session: aiohttp.ClientSession,
     hdrs: Dict[str, str],
@@ -1271,7 +1279,7 @@ async def get_humanitarian_clock(
     end_date   = today.isoformat()
 
     async with aiohttp.ClientSession(headers={"User-Agent": "WatchTower/1.0"}) as session:
-        country_items  = list(UCDP_COUNTRY_MAP.items())
+        country_items  = list(CLOCK_COUNTRY_MAP.items())
         raw_results    = await asyncio.gather(*[
             _fetch_clock_events(session, ucdp_hdrs, gw_code, start_date, end_date)
             for _, gw_code in country_items
