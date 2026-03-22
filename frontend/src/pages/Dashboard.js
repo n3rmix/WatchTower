@@ -9,6 +9,7 @@ import StatCard from "../components/StatCard";
 import ConflictTable from "../components/ConflictTable";
 import ConflictGlobe from "../components/ConflictGlobe";
 import ConflictHeatmap from "../components/ConflictHeatmap";
+import HumanitarianClock from "../components/HumanitarianClock";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -182,10 +183,11 @@ const Dashboard = () => {
           />
         </div>
 
-        {/* Globe + Heatmap */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+        {/* Globe + Heatmap + Humanitarian Clock */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
           <ConflictGlobe />
           <ConflictHeatmap conflicts={conflicts} />
+          <HumanitarianClock />
         </div>
 
         {/* Active Conflicts Count */}

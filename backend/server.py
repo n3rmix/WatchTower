@@ -1199,6 +1199,172 @@ async def get_chart_stats():
     }
 
 
+# ─── Humanitarian Clock ────────────────────────────────────────────────────────
+
+async def _fetch_clock_events(
+    session: aiohttp.ClientSession,
+    hdrs: Dict[str, str],
+    country_code: str,
+    start_date: str,
+    end_date: str,
+) -> List[Dict]:
+    """Fetch all GED Candidate events for a country over a date range."""
+    url = f"{UCDP_API_BASE}/gedevents/{UCDP_CANDIDATE_VERSION}"
+    all_events: List[Dict] = []
+    pg = 1
+    while True:
+        try:
+            async with session.get(
+                url,
+                params={
+                    "Country":   country_code,
+                    "StartDate": start_date,
+                    "EndDate":   end_date,
+                    "pagesize":  1000,
+                    "page":      pg,
+                },
+                headers=hdrs,
+                timeout=aiohttp.ClientTimeout(total=45),
+            ) as resp:
+                if resp.status != 200:
+                    logger.warning(
+                        f"Clock events HTTP {resp.status} country={country_code} page={pg}"
+                    )
+                    break
+                data = await resp.json()
+                results = data.get("Result", [])
+                all_events.extend(results)
+                if len(results) < 1000:
+                    break
+                pg += 1
+        except Exception as exc:
+            logger.warning(f"Clock events error country={country_code}: {exc}")
+            break
+    return all_events
+
+
+@api_router.get("/humanitarian-clock")
+async def get_humanitarian_clock(
+    threshold: int = 25,
+    lookback_days: int = 90,
+):
+    """Humanitarian Clock — Time-Since-Escalation.
+
+    For each monitored conflict, fetches GED Candidate events over the past
+    `lookback_days` and slides a 7-day window backward from today to find the
+    most recent period where battle deaths exceeded `threshold`.
+
+    Returns conflicts sorted by days_since_escalation ascending so the most
+    urgent appear first. Conflicts near zero are actively escalating; those
+    approaching lookback_days are cooling.
+
+    threshold    – min battle deaths in a 7-day window to qualify as significant
+    lookback_days – how far back to search (default 90)
+    """
+    api_key = get_ucdp_api_key()
+    ucdp_hdrs: Dict[str, str] = {}
+    if api_key:
+        ucdp_hdrs["x-ucdp-access-token"] = api_key
+
+    today      = datetime.now(timezone.utc).date()
+    start_date = (today - timedelta(days=lookback_days)).isoformat()
+    end_date   = today.isoformat()
+
+    async with aiohttp.ClientSession(headers={"User-Agent": "WatchTower/1.0"}) as session:
+        country_items  = list(UCDP_COUNTRY_MAP.items())
+        raw_results    = await asyncio.gather(*[
+            _fetch_clock_events(session, ucdp_hdrs, gw_code, start_date, end_date)
+            for _, gw_code in country_items
+        ])
+
+    conflicts: List[Dict] = []
+    for (country, _), events in zip(country_items, raw_results):
+        if not events:
+            conflicts.append({
+                "country":               country,
+                "conflict_name":         country,
+                "days_since_escalation": lookback_days,
+                "last_escalation_date":  None,
+                "recent_best_deaths":    0,
+                "total_events":          0,
+                "total_best_deaths":     0,
+                "status":                "quiet",
+            })
+            continue
+
+        # Build a daily death-count map  (date_str → total best)
+        daily: Dict[str, int] = {}
+        for ev in events:
+            ds = (ev.get("date_start") or "")[:10]
+            if ds:
+                daily[ds] = daily.get(ds, 0) + int(ev.get("best") or 0)
+
+        dates = sorted(daily.keys(), reverse=True)   # newest first
+
+        # Slide a 7-day window from most recent date backward, find first
+        # window whose cumulative deaths >= threshold
+        WINDOW = 7
+        last_escalation_date: Optional[str] = None
+        last_deaths = 0
+
+        for anchor in dates:
+            try:
+                anchor_dt = datetime.fromisoformat(anchor).date()
+            except ValueError:
+                continue
+            window_start = anchor_dt - timedelta(days=WINDOW)
+            w_total = sum(
+                v for d, v in daily.items()
+                if window_start <= datetime.fromisoformat(d).date() <= anchor_dt
+            )
+            if w_total >= threshold:
+                last_escalation_date = anchor
+                last_deaths = w_total
+                break
+
+        if last_escalation_date:
+            try:
+                days_since = (today - datetime.fromisoformat(last_escalation_date).date()).days
+            except ValueError:
+                days_since = lookback_days
+        else:
+            days_since = lookback_days
+
+        days_since = min(days_since, lookback_days)
+
+        conflict_name = (events[0].get("conflict_name") or country)
+        total_best    = sum(int(ev.get("best") or 0) for ev in events)
+        status = (
+            "escalating" if days_since <= 7 else
+            "watch"      if days_since <= 21 else
+            "cooling"
+        )
+
+        conflicts.append({
+            "country":               country,
+            "conflict_name":         conflict_name,
+            "days_since_escalation": days_since,
+            "last_escalation_date":  last_escalation_date,
+            "recent_best_deaths":    last_deaths,
+            "total_events":          len(events),
+            "total_best_deaths":     total_best,
+            "status":                status,
+        })
+
+    conflicts.sort(key=lambda c: c["days_since_escalation"])
+    logger.info(
+        f"Humanitarian clock: {len(conflicts)} conflicts, "
+        f"threshold={threshold}, lookback={lookback_days}d"
+    )
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "lookback_days": lookback_days,
+        "threshold":     threshold,
+        "conflicts":     conflicts,
+    }
+
+
 # ─── App setup ────────────────────────────────────────────────────────────────
 
 app.include_router(api_router)
