@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
+import json
 import logging
 import re
 from pathlib import Path
@@ -910,19 +911,21 @@ async def get_chart_conflicts():
 
 @api_router.get("/onesided")
 async def get_onesided_actors(gwno: str, years: str):
-    """Identify One-Sided Violence perpetrators via the UCDP GED (gedevents) endpoint.
+    """Two-step actor resolution using UCDP onesided + gedevents datasets.
 
-    The dedicated /onesided dataset endpoint proved unreliable (returns empty
-    results regardless of parameters).  This implementation drives the actor
-    list from gedevents filtered to TypeOfViolence=3, which is the same
-    underlying data — events where a state/organised actor killed civilians —
-    aggregated by side_a.
+    Step 1 – GET /onesided/{version}?Country=<gwno>&Year=<y1,y2,...>
+        Retrieves the list of perpetrators for the requested country/years.
+        Year is sent as a comma-separated string in a single request so the
+        API can handle cross-year de-duplication server-side.
 
-    gwno  – Gleditsch-Ward code(s), comma-separated (e.g. "369" or "678,679")
-    years – comma-separated year integers, e.g. "2020,2021,2022"
+    Step 2 – GET /gedevents/{version}?Actor=<actor_id>&TypeOfViolence=3&Year=<years>
+        For every actor_id returned by step 1 we fetch the raw event timeline.
+        Each event contributes: date_start, deaths_civilians, adm_1,
+        source_office, best (used for summary stats).
 
-    Returns actors aggregated across all requested years, sorted by
-    total_deaths descending.
+    Returns actors sorted by total_deaths desc.  Each actor carries an
+    embedded `events` list so the frontend can render the full profile without
+    a separate round-trip.
     """
     api_key = get_ucdp_api_key()
     ucdp_hdrs: Dict[str, str] = {}
@@ -934,71 +937,158 @@ async def get_onesided_actors(gwno: str, years: str):
         raise HTTPException(status_code=400, detail="No valid years provided")
 
     gwno_list = [g.strip() for g in gwno.split(",") if g.strip()]
-    url = f"{UCDP_API_BASE}/gedevents/{UCDP_VERSION}"
+    onesided_url = f"{UCDP_API_BASE}/onesided/{UCDP_VERSION}"
+    gedevents_url = f"{UCDP_API_BASE}/gedevents/{UCDP_VERSION}"
+    # actor_id (str) → actor dict
     actors_map: Dict[str, Dict] = {}
 
     async with aiohttp.ClientSession(headers={"User-Agent": "WatchTower/1.0"}) as session:
+
+        # ── Step 1: collect actors from the onesided dataset ──────────────────
         for gwno_single in gwno_list:
-            for year in year_list:
-                pg = 1
-                while True:
-                    params = {
-                        "TypeOfViolence": 3,
-                        "Country": gwno_single,
-                        "Year": year,
-                        "pagesize": 1000,
-                        "page": pg,
-                    }
-                    try:
-                        async with session.get(
-                            url, params=params, headers=ucdp_hdrs,
-                            timeout=aiohttp.ClientTimeout(total=30),
-                        ) as resp:
-                            if resp.status != 200:
-                                logger.warning(f"UCDP gedevents(OSV) HTTP {resp.status} gwno={gwno_single} year={year}")
-                                break
-                            data = await resp.json()
-                            results = data.get("Result", [])
-                            if not results:
-                                break
-                            for ev in results:
-                                name = (ev.get("side_a") or "Unknown").strip()
-                                # side_a_dset_id is the stable actor identifier in GED
-                                actor_id = str(ev.get("side_a_dset_id") or "")
-                                deaths = int(ev.get("best", 0) or 0)
-                                low = int(ev.get("low", 0) or 0)
-                                high = int(ev.get("high", 0) or 0)
-                                rec_year = int(ev.get("year", year))
-                                key = name
-                                if key not in actors_map:
-                                    actors_map[key] = {
-                                        "actor_id": actor_id,
-                                        "actor_name": name,
-                                        "years_active": [],
-                                        "total_deaths": 0,
-                                        "deaths_low": 0,
-                                        "deaths_high": 0,
-                                        "per_year": {},
-                                    }
-                                entry = actors_map[key]
-                                if rec_year not in entry["years_active"]:
-                                    entry["years_active"].append(rec_year)
-                                entry["total_deaths"] += deaths
-                                entry["deaths_low"] += low
-                                entry["deaths_high"] += high
+            pg = 1
+            while True:
+                params = {
+                    "Country": gwno_single,
+                    "Year": ",".join(year_list),   # comma-separated list in one request
+                    "pagesize": 1000,
+                    "page": pg,
+                }
+                try:
+                    async with session.get(
+                        onesided_url, params=params, headers=ucdp_hdrs,
+                        timeout=aiohttp.ClientTimeout(total=30),
+                    ) as resp:
+                        body_text = await resp.text()
+                        if resp.status != 200:
+                            logger.warning(
+                                f"UCDP onesided HTTP {resp.status} gwno={gwno_single} "
+                                f"body={body_text[:300]}"
+                            )
+                            break
+                        try:
+                            data = json.loads(body_text)
+                        except Exception:
+                            logger.warning(f"UCDP onesided non-JSON gwno={gwno_single}: {body_text[:300]}")
+                            break
+                        results = data.get("Result", [])
+                        logger.info(
+                            f"UCDP onesided gwno={gwno_single} page={pg}: "
+                            f"{len(results)} records (TotalCount={data.get('TotalCount')}, "
+                            f"keys={list(data.keys())})"
+                        )
+                        if not results:
+                            break
+                        for rec in results:
+                            actor_id = str(
+                                rec.get("actor_id")
+                                or rec.get("side_a_id")
+                                or rec.get("actorid")
+                                or ""
+                            )
+                            name = (
+                                rec.get("side_a")
+                                or rec.get("actor")
+                                or rec.get("name")
+                                or "Unknown"
+                            ).strip()
+                            key = actor_id or name
+                            if not key:
+                                continue
+                            if key not in actors_map:
+                                actors_map[key] = {
+                                    "actor_id": actor_id,
+                                    "actor_name": name,
+                                    "years_active": [],
+                                    "total_deaths": 0,
+                                    "deaths_low": 0,
+                                    "deaths_high": 0,
+                                    "per_year": {},
+                                    "events": [],
+                                }
+                            entry = actors_map[key]
+                            deaths  = int(rec.get("best", 0) or 0)
+                            low     = int(rec.get("low",  0) or 0)
+                            high    = int(rec.get("high", 0) or 0)
+                            rec_year = int(rec.get("year", 0) or 0)
+                            entry["total_deaths"] += deaths
+                            entry["deaths_low"]   += low
+                            entry["deaths_high"]  += high
+                            if rec_year and rec_year not in entry["years_active"]:
+                                entry["years_active"].append(rec_year)
+                            if rec_year:
                                 yr_key = str(rec_year)
                                 entry["per_year"][yr_key] = entry["per_year"].get(yr_key, 0) + deaths
-                            if len(results) < 1000:
-                                break
-                            pg += 1
-                    except Exception as exc:
-                        logger.warning(f"UCDP gedevents(OSV) error gwno={gwno_single} year={year}: {exc}")
-                        break
+                        if len(results) < 1000:
+                            break
+                        pg += 1
+                except Exception as exc:
+                    logger.warning(f"UCDP onesided error gwno={gwno_single}: {exc}")
+                    break
+
+        logger.info(f"Onesided step 1 complete: {len(actors_map)} actors for gwno={gwno}")
+
+        # ── Step 2: fetch event timeline per actor from gedevents ─────────────
+        for key, actor in actors_map.items():
+            actor_id = actor["actor_id"]
+            if not actor_id:
+                logger.debug(f"Skipping timeline fetch for actor without ID: {actor['actor_name']!r}")
+                continue
+            pg = 1
+            while True:
+                params = {
+                    "Actor": actor_id,
+                    "TypeOfViolence": 3,
+                    "Year": ",".join(year_list),
+                    "pagesize": 1000,
+                    "page": pg,
+                }
+                try:
+                    async with session.get(
+                        gedevents_url, params=params, headers=ucdp_hdrs,
+                        timeout=aiohttp.ClientTimeout(total=45),
+                    ) as resp:
+                        if resp.status != 200:
+                            logger.warning(f"UCDP gedevents(OSV) HTTP {resp.status} actor_id={actor_id}")
+                            break
+                        data = await resp.json()
+                        results = data.get("Result", [])
+                        if not results:
+                            break
+                        for ev in results:
+                            actor["events"].append({
+                                "date_start":       ev.get("date_start", ""),
+                                "deaths_civilians": int(ev.get("deaths_civilians", 0) or 0),
+                                "adm_1":            ev.get("adm_1", ""),
+                                "source_office":    ev.get("source_office", ""),
+                                # keep `best` so the frontend timeline chart works unchanged
+                                "best":             int(ev.get("best", 0) or 0),
+                            })
+                        if len(results) < 1000:
+                            break
+                        pg += 1
+                except Exception as exc:
+                    logger.warning(f"UCDP gedevents(OSV) error actor_id={actor_id}: {exc}")
+                    break
+
+            # Sort events chronologically
+            actor["events"].sort(key=lambda e: e.get("date_start", ""))
+
+            # Build summary stats from event list so the frontend profile view
+            # can render without a second API call
+            evs = actor["events"]
+            actor["total_events"]    = len(evs)
+            actor["civilian_deaths"] = sum(e["deaths_civilians"] for e in evs)
+            actor["source_offices"]  = sorted({e["source_office"] for e in evs if e.get("source_office")})
+            # Recompute total_deaths from events if step 1 gave 0 (event-level best may differ)
+            if actor["total_deaths"] == 0 and evs:
+                actor["total_deaths"] = sum(e["best"] for e in evs)
 
     actors = sorted(actors_map.values(), key=lambda x: x["total_deaths"], reverse=True)
     for a in actors:
         a["years_active"] = sorted(a["years_active"])
-    logger.info(f"UCDP onesided: gwno={gwno} years={years} → {len(actors)} actors")
+
+    logger.info(f"UCDP onesided final: gwno={gwno} years={years} → {len(actors)} actors")
     return {"actors": actors, "total_actors": len(actors)}
 
 
