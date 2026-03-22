@@ -8,6 +8,22 @@ function formatTimestamp(ts) {
   return d.toUTCString().replace(/:\d{2} GMT$/, " UTC");
 }
 
+const INTENSITY_STYLES = {
+  Critical: "bg-red-950/70 border-red-700 text-red-400",
+  High:     "bg-orange-950/60 border-orange-700 text-orange-400",
+  Medium:   "bg-yellow-950/50 border-yellow-700/60 text-yellow-500",
+  Low:      "bg-zinc-800/50 border-zinc-700 text-zinc-400",
+};
+
+const IntensityBadge = ({ tier = "Low" }) => (
+  <span
+    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-sm text-[10px] font-mono uppercase tracking-wider border ${INTENSITY_STYLES[tier] ?? INTENSITY_STYLES.Low}`}
+    title="Conflict intensity: derived from UCDP event count and death rate"
+  >
+    {tier}
+  </span>
+);
+
 const ConflictTable = ({ conflicts, dataLastFetch }) => {
   const sectionTs = formatTimestamp(dataLastFetch);
 
@@ -40,6 +56,9 @@ const ConflictTable = ({ conflicts, dataLastFetch }) => {
                   <p className="text-xs uppercase tracking-wider font-mono text-zinc-500 mb-1">Country</p>
                   <p className="font-mono text-zinc-200 font-semibold">{conflict.country}</p>
                   <p className="font-mono text-zinc-500 text-xs mt-1">{conflict.region}</p>
+                  <div className="mt-1.5">
+                    <IntensityBadge tier={conflict.intensity_tier} />
+                  </div>
                   {conflictTs && (
                     <p className="flex items-center gap-1 font-mono text-zinc-700 text-xs mt-1" data-testid={`conflict-timestamp-${index}`}>
                       <Clock className="w-2.5 h-2.5" />
