@@ -1344,18 +1344,39 @@ async def get_longitudinal_tracker(conflict_id: str):
             ),
         )
 
-    # ── Aggregate deaths by year ───────────────────────────────────────────────
+    # ── Aggregate deaths by year AND by dyad ──────────────────────────────────
     year_map: Dict[int, Dict] = {}
+    dyad_year_map: Dict[str, Dict[int, Dict]] = {}
+
     for rec in bd_records:
         try:
             yr = int(rec.get("year", 0))
         except (TypeError, ValueError):
             continue
+        best = int(rec.get("bd_best") or rec.get("best") or 0)
+        low  = int(rec.get("bd_low")  or rec.get("low")  or 0)
+        high = int(rec.get("bd_high") or rec.get("high") or 0)
+
+        # Conflict-level year totals
         if yr not in year_map:
             year_map[yr] = {"best": 0, "low": 0, "high": 0}
-        year_map[yr]["best"] += int(rec.get("bd_best") or rec.get("best") or 0)
-        year_map[yr]["low"]  += int(rec.get("bd_low")  or rec.get("low")  or 0)
-        year_map[yr]["high"] += int(rec.get("bd_high") or rec.get("high") or 0)
+        year_map[yr]["best"] += best
+        year_map[yr]["low"]  += low
+        year_map[yr]["high"] += high
+
+        # Dyad-level year totals
+        dname = (
+            rec.get("dyad_name")
+            or rec.get("dyad_new_name")
+            or f"Dyad {rec.get('dyad_new_id') or rec.get('dyad_id') or '?'}"
+        )
+        if dname not in dyad_year_map:
+            dyad_year_map[dname] = {}
+        if yr not in dyad_year_map[dname]:
+            dyad_year_map[dname][yr] = {"best": 0, "low": 0, "high": 0}
+        dyad_year_map[dname][yr]["best"] += best
+        dyad_year_map[dname][yr]["low"]  += low
+        dyad_year_map[dname][yr]["high"] += high
 
     years = sorted(year_map.keys())
     cum_best = cum_low = cum_high = 0
@@ -1374,6 +1395,47 @@ async def get_longitudinal_tracker(conflict_id: str):
             "cumulative_low":  cum_low,
             "cumulative_high": cum_high,
         })
+
+    # ── Build per-dyad breakdown ───────────────────────────────────────────────
+    dyadic_by_name: Dict[str, Dict] = {
+        dr.get("dyad_name", ""): dr
+        for dr in dyadic_records
+        if dr.get("dyad_name")
+    }
+
+    dyad_breakdown: List[Dict] = []
+    for dname, yr_data in dyad_year_map.items():
+        dyad_years = sorted(yr_data.keys())
+        dcum = 0
+        dyad_tl: List[Dict] = []
+        for yr in dyad_years:
+            d = yr_data[yr]
+            dcum += d["best"]
+            dyad_tl.append({
+                "year":            yr,
+                "best":            d["best"],
+                "low":             d["low"],
+                "high":            d["high"],
+                "cumulative_best": dcum,
+            })
+        dtotal   = sum(d["best"] for d in yr_data.values())
+        dpeak_yr = max(yr_data.keys(), key=lambda y: yr_data[y]["best"])
+        dr       = dyadic_by_name.get(dname, {})
+        dyad_breakdown.append({
+            "dyad_name":   dname,
+            "dyad_id":     str(dr.get("dyad_new_id") or dr.get("dyad_id") or ""),
+            "side_a":      dr.get("side_a", ""),
+            "side_b":      dr.get("side_b", ""),
+            "start_date":  dr.get("start_date", ""),
+            "ep_end_date": dr.get("ep_end_date", ""),
+            "total_best":  dtotal,
+            "peak_year":   dpeak_yr,
+            "peak_deaths": yr_data[dpeak_yr]["best"],
+            "first_year":  dyad_years[0],
+            "last_year":   dyad_years[-1],
+            "timeline":    dyad_tl,
+        })
+    dyad_breakdown.sort(key=lambda d: d["total_best"], reverse=True)
 
     # ── Conflict metadata from dyadic records ─────────────────────────────────
     conflict_name    = ""
@@ -1425,6 +1487,7 @@ async def get_longitudinal_tracker(conflict_id: str):
         "peak_year":         peak["year"] if peak else None,
         "peak_deaths":       peak["best"] if peak else 0,
         "dyads":             dyads,
+        "dyad_breakdown":    dyad_breakdown,
         "timeline":          timeline,
     }
 
