@@ -936,7 +936,8 @@ async def get_onesided_actors(gwno: str, years: str):
             for year in year_list:
                 pg = 1
                 while True:
-                    params = {"Country": gwno_single, "Year": year, "pagesize": 1000, "page": pg}
+                    # onesided uses "Gwno" (not "Country" like gedevents)
+                    params = {"Gwno": gwno_single, "Year": year, "pagesize": 1000, "page": pg}
                     try:
                         async with session.get(
                             url, params=params, headers=ucdp_hdrs,

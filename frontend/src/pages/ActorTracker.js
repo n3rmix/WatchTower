@@ -15,7 +15,7 @@ const API = `${BACKEND_URL}/api`;
 
 const COUNTRIES = [
   { label: "Ukraine",        gwno: "369"     },
-  { label: "Gaza/Palestine", gwno: "666"     },
+  { label: "Gaza/Palestine", gwno: "6663,666" }, // 6663 = UCDP extended code for Palestinian territories (onesided); 666 = Israel (GED fallback)
   { label: "Sudan",          gwno: "625"     },
   { label: "Myanmar",        gwno: "775"     },
   { label: "Syria",          gwno: "652"     },
