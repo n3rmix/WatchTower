@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef } from "react";
+import React, { useState, useCallback, useMemo, useRef } from "react";
 import { Link } from "react-router-dom";
 import axios from "axios";
 import {
@@ -9,7 +9,6 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
-  Legend,
   ResponsiveContainer,
   ReferenceLine,
 } from "recharts";
@@ -31,6 +30,30 @@ import {
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
+// ── Constants ──────────────────────────────────────────────────────────────────
+
+const DYAD_COLORS = [
+  "#f59e0b", // amber
+  "#3b82f6", // blue
+  "#10b981", // emerald
+  "#8b5cf6", // violet
+  "#f97316", // orange
+  "#06b6d4", // cyan
+  "#ec4899", // pink
+  "#84cc16", // lime
+  "#14b8a6", // teal
+  "#a78bfa", // purple
+];
+
+const MAX_DYADS_CHART = 8; // group the rest as "Other"
+
+const CONFLICT_TYPES = {
+  1: "Extra-systemic",
+  2: "Inter-state",
+  3: "Intra-state",
+  4: "Internationalised intra-state",
+};
+
 // ── Formatters ─────────────────────────────────────────────────────────────────
 
 const fmtNum = (n) => (n ?? 0).toLocaleString();
@@ -41,12 +64,8 @@ const fmtK = (n) => {
   return String(n ?? 0);
 };
 
-const CONFLICT_TYPES = {
-  1: "Extra-systemic",
-  2: "Inter-state",
-  3: "Intra-state",
-  4: "Internationalised intra-state",
-};
+const truncate = (s, max = 38) =>
+  s && s.length > max ? s.slice(0, max - 1) + "…" : s;
 
 // ── Sub-components ─────────────────────────────────────────────────────────────
 
@@ -77,38 +96,45 @@ function StatTile({ icon: Icon, label, value, sub, color = "text-red-400" }) {
   );
 }
 
-// Custom tooltip for the Recharts ComposedChart
+// Custom chart tooltip — shows all dyad bars + cumulative line for a year
 function ChartTooltip({ active, payload, label }) {
   if (!active || !payload?.length) return null;
-  const yearly = payload.find((p) => p.dataKey === "best");
   const cumul  = payload.find((p) => p.dataKey === "cumulative_best");
+  const dyads  = payload.filter((p) => p.dataKey !== "cumulative_best" && (p.value ?? 0) > 0);
+  const total  = dyads.reduce((s, p) => s + (p.value ?? 0), 0);
   return (
-    <div className="bg-zinc-900 border border-zinc-700 rounded-sm px-3 py-2 text-xs font-mono space-y-1 shadow-xl">
-      <p className="text-zinc-400 uppercase tracking-wider text-[10px] mb-1.5">{label}</p>
-      {yearly && (
-        <div className="flex items-center gap-2">
-          <span className="w-2 h-2 rounded-sm bg-amber-500 inline-block" />
-          <span className="text-zinc-400">Yearly (best):</span>
-          <span className="text-amber-300 font-bold">{fmtNum(yearly.value)}</span>
+    <div className="bg-zinc-900 border border-zinc-700 rounded-sm px-3 py-2.5 text-xs font-mono shadow-xl max-w-[260px]">
+      <p className="text-zinc-400 uppercase tracking-wider text-[10px] mb-2 font-bold">{label}</p>
+      {dyads.map((p) => (
+        <div key={p.dataKey} className="flex items-center gap-2 py-0.5">
+          <span
+            className="w-2 h-2 rounded-sm inline-block flex-shrink-0"
+            style={{ background: p.fill }}
+          />
+          <span className="text-zinc-500 flex-1 truncate">{truncate(p.name, 28)}</span>
+          <span className="font-bold" style={{ color: p.fill }}>
+            {fmtNum(p.value)}
+          </span>
+        </div>
+      ))}
+      {dyads.length > 1 && (
+        <div className="flex items-center gap-2 border-t border-zinc-800 pt-1.5 mt-1">
+          <span className="text-zinc-400 flex-1">Total</span>
+          <span className="text-zinc-200 font-bold">{fmtNum(total)}</span>
         </div>
       )}
       {cumul && (
-        <div className="flex items-center gap-2">
-          <span className="w-2 h-0.5 bg-red-500 inline-block" />
-          <span className="text-zinc-400">Cumulative:</span>
+        <div className="flex items-center gap-2 border-t border-zinc-800 pt-1.5 mt-1">
+          <span className="w-4 h-0.5 bg-red-500 inline-block flex-shrink-0" />
+          <span className="text-zinc-400 flex-1">Cumulative</span>
           <span className="text-red-300 font-bold">{fmtNum(cumul.value)}</span>
-        </div>
-      )}
-      {payload[0]?.payload?.low != null && (
-        <div className="text-zinc-600 text-[10px] pt-0.5 border-t border-zinc-800 mt-1">
-          Range: {fmtNum(payload[0].payload.low)} – {fmtNum(payload[0].payload.high)}
         </div>
       )}
     </div>
   );
 }
 
-// Search result chip
+// Search result row
 function SearchResult({ result, onSelect }) {
   return (
     <button
@@ -131,32 +157,19 @@ function SearchResult({ result, onSelect }) {
   );
 }
 
-// Dyadic parties table row
-function DyadRow({ dyad }) {
-  return (
-    <tr className="border-b border-zinc-800/50 hover:bg-zinc-800/20 transition-colors">
-      <td className="py-2 px-3 text-xs font-mono text-zinc-300">{dyad.side_a}</td>
-      <td className="py-2 px-3 text-[10px] font-mono text-zinc-600 text-center">vs</td>
-      <td className="py-2 px-3 text-xs font-mono text-zinc-300">{dyad.side_b}</td>
-      <td className="py-2 px-3 text-[10px] font-mono text-zinc-500">
-        {dyad.start_date ? dyad.start_date.slice(0, 4) : "—"}
-        {dyad.ep_end_date ? ` – ${dyad.ep_end_date.slice(0, 4)}` : " – ongoing"}
-      </td>
-    </tr>
-  );
-}
-
 // Auto-generated executive briefing
 function ExecutiveBriefing({ data }) {
-  const { conflict_name, location, start_year, span, total_deaths_best,
-          total_deaths_low, total_deaths_high, peak_year, peak_deaths,
-          total_years, dyads, type_of_conflict } = data;
+  const {
+    conflict_name, location, start_year, span, total_deaths_best,
+    total_deaths_low, total_deaths_high, peak_year, peak_deaths,
+    total_years, dyad_breakdown = [], dyads, type_of_conflict,
+  } = data;
 
   const typeLabel = CONFLICT_TYPES[type_of_conflict] || "Armed";
-  const mainDyad  = dyads[0];
-  const parties   = mainDyad
-    ? `${mainDyad.side_a} against ${mainDyad.side_b}`
-    : "multiple parties";
+  const topDyad   = dyad_breakdown[0] || dyads?.[0];
+  const parties   = topDyad?.dyad_name || (dyads?.[0]
+    ? `${dyads[0].side_a} against ${dyads[0].side_b}`
+    : "multiple parties");
 
   return (
     <div className="tactical-card p-5 space-y-4">
@@ -166,35 +179,53 @@ function ExecutiveBriefing({ data }) {
 
           <p className="text-sm font-mono text-zinc-300 leading-relaxed">
             The{" "}
-            <span className="text-zinc-100 font-semibold">{conflict_name || `Conflict ${data.conflict_id}`}</span>
-            {" "}— a {typeLabel.toLowerCase()} conflict in{" "}
+            <span className="text-zinc-100 font-semibold">
+              {conflict_name || `Conflict ${data.conflict_id}`}
+            </span>{" "}
+            — a {typeLabel.toLowerCase()} conflict in{" "}
             <span className="text-zinc-100">{location}</span>
-            {" "}pitting {parties} — has been recorded in UCDP data since{" "}
+            {parties ? ` involving ${parties}` : ""} — has been recorded in
+            UCDP data since{" "}
             <span className="text-amber-400 font-bold">{start_year}</span>.
           </p>
 
           <p className="text-sm font-mono text-zinc-300 leading-relaxed">
-            Over <span className="text-amber-400 font-bold">{total_years} year{total_years !== 1 ? "s" : ""}</span> of
-            conflict ({span}), this war has claimed an estimated{" "}
-            <span className="text-red-400 font-bold text-base">{fmtNum(total_deaths_best)}</span>{" "}
+            Over{" "}
+            <span className="text-amber-400 font-bold">
+              {total_years} year{total_years !== 1 ? "s" : ""}
+            </span>{" "}
+            of conflict ({span}), this war has claimed an estimated{" "}
+            <span className="text-red-400 font-bold text-base">
+              {fmtNum(total_deaths_best)}
+            </span>{" "}
             lives (best estimate), with a confidence range of{" "}
-            <span className="text-zinc-300">{fmtNum(total_deaths_low)}–{fmtNum(total_deaths_high)}</span>.
+            <span className="text-zinc-300">
+              {fmtNum(total_deaths_low)}–{fmtNum(total_deaths_high)}
+            </span>.
           </p>
 
           {peak_year && peak_deaths > 0 && (
             <p className="text-sm font-mono text-zinc-300 leading-relaxed">
               The deadliest year on record was{" "}
-              <span className="text-amber-400 font-bold">{peak_year}</span>,
-              with <span className="text-red-400 font-bold">{fmtNum(peak_deaths)}</span> battle
-              deaths — the single worst year in this conflict's history.
+              <span className="text-amber-400 font-bold">{peak_year}</span>, with{" "}
+              <span className="text-red-400 font-bold">{fmtNum(peak_deaths)}</span>{" "}
+              battle deaths.
             </p>
           )}
 
-          {dyads.length > 1 && (
+          {dyad_breakdown.length > 1 && (
             <p className="text-sm font-mono text-zinc-300 leading-relaxed">
-              The conflict involves{" "}
-              <span className="text-amber-400 font-bold">{dyads.length}</span> distinct
-              combatant dyads, reflecting the multi-actor nature of the violence.
+              The conflict spans{" "}
+              <span className="text-amber-400 font-bold">{dyad_breakdown.length}</span>{" "}
+              distinct combatant dyads. The deadliest dyad —{" "}
+              <span className="text-zinc-100">{dyad_breakdown[0].dyad_name}</span>{" "}
+              — accounts for{" "}
+              <span className="text-red-400 font-bold">
+                {fmtNum(dyad_breakdown[0].total_best)}
+              </span>{" "}
+              deaths (
+              {Math.round((dyad_breakdown[0].total_best / total_deaths_best) * 100)}
+              % of the total).
             </p>
           )}
 
@@ -219,13 +250,63 @@ function ExecutiveBriefing({ data }) {
 // ── Main Page ──────────────────────────────────────────────────────────────────
 
 export default function LongitudinalTracker() {
-  const [query,          setQuery]          = useState("");
-  const [searchResults,  setSearchResults]  = useState(null);   // null = not searched yet
-  const [searching,      setSearching]      = useState(false);
-  const [data,           setData]           = useState(null);
-  const [loading,        setLoading]        = useState(false);
-  const [error,          setError]          = useState(null);
+  const [query,         setQuery]         = useState("");
+  const [searchResults, setSearchResults] = useState(null);
+  const [searching,     setSearching]     = useState(false);
+  const [data,          setData]          = useState(null);
+  const [loading,       setLoading]       = useState(false);
+  const [error,         setError]         = useState(null);
   const inputRef = useRef(null);
+
+  // ── Chart data — flat records with one key per dyad ─────────────────────────
+
+  const { chartData, dyadList } = useMemo(() => {
+    if (!data?.dyad_breakdown?.length) {
+      return { chartData: data?.timeline || [], dyadList: [] };
+    }
+
+    const sorted    = [...data.dyad_breakdown].sort((a, b) => b.total_best - a.total_best);
+    const topDyads  = sorted.slice(0, MAX_DYADS_CHART);
+    const restDyads = sorted.slice(MAX_DYADS_CHART);
+    const hasOther  = restDyads.length > 0;
+
+    // Index main timeline by year for cumulative
+    const timelineByYear = Object.fromEntries(
+      data.timeline.map((t) => [t.year, t])
+    );
+
+    // Collect all years
+    const allYears = Array.from(
+      new Set(data.timeline.map((t) => t.year))
+    ).sort((a, b) => a - b);
+
+    const flat = allYears.map((yr) => {
+      const point = {
+        year:            yr,
+        cumulative_best: timelineByYear[yr]?.cumulative_best ?? 0,
+        _low:            timelineByYear[yr]?.low ?? 0,
+        _high:           timelineByYear[yr]?.high ?? 0,
+      };
+      topDyads.forEach((dyad) => {
+        const dp = dyad.timeline.find((t) => t.year === yr);
+        point[dyad.dyad_name] = dp?.best ?? 0;
+      });
+      if (hasOther) {
+        point["Other"] = restDyads.reduce((s, dyad) => {
+          const dp = dyad.timeline.find((t) => t.year === yr);
+          return s + (dp?.best ?? 0);
+        }, 0);
+      }
+      return point;
+    });
+
+    const dyadList = [
+      ...topDyads.map((d) => d.dyad_name),
+      ...(hasOther ? ["Other"] : []),
+    ];
+
+    return { chartData: flat, dyadList };
+  }, [data]);
 
   // ── Search ──────────────────────────────────────────────────────────────────
 
@@ -233,7 +314,7 @@ export default function LongitudinalTracker() {
     const q = query.trim();
     if (!q) return;
 
-    // Numeric input → treat directly as conflict_id, skip search step
+    // Pure numeric → treat directly as conflict_id
     if (/^\d+$/.test(q)) {
       loadConflict(q);
       return;
@@ -247,11 +328,15 @@ export default function LongitudinalTracker() {
       const res = await axios.get(`${API}/longitudinal/search`, { params: { q } });
       setSearchResults(res.data.results);
     } catch (e) {
-      setError(e.response?.data?.detail || "Search failed. Try entering the numeric UCDP conflict ID directly.");
+      setError(
+        e.response?.data?.detail ||
+          "Search failed. Try entering the numeric UCDP conflict ID directly."
+      );
       setSearchResults([]);
     } finally {
       setSearching(false);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query]);
 
   // ── Load timeline ───────────────────────────────────────────────────────────
@@ -267,7 +352,10 @@ export default function LongitudinalTracker() {
       });
       setData(res.data);
     } catch (e) {
-      setError(e.response?.data?.detail || "Failed to fetch longitudinal data from UCDP.");
+      setError(
+        e.response?.data?.detail ||
+          "Failed to fetch longitudinal data from UCDP."
+      );
     } finally {
       setLoading(false);
     }
@@ -281,10 +369,6 @@ export default function LongitudinalTracker() {
     setQuery(result.conflict_name);
     loadConflict(result.conflict_id);
   };
-
-  // ── Derived chart label helper ──────────────────────────────────────────────
-
-  const tickFormatter = (val) => fmtK(val);
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -301,7 +385,7 @@ export default function LongitudinalTracker() {
                 Long-Run Human Cost — Longitudinal Tracker
               </h1>
               <p className="text-[10px] font-mono text-zinc-600 uppercase tracking-wider">
-                Compounding Casualty Timeline · UCDP Battle Deaths + Dyadic · 1989 – Present
+                Per-Dyad Casualty Timeline · UCDP Battle Deaths + Dyadic · 1989 – Present
               </p>
             </div>
           </div>
@@ -317,15 +401,14 @@ export default function LongitudinalTracker() {
 
       <main className="container mx-auto px-4 py-6 space-y-6">
 
-        {/* ── 01 · Conflict Search ── */}
+        {/* ── 01 · Conflict Selection ── */}
         <section className="space-y-3">
           <SectionLabel num="01" title="Conflict Selection" />
-
           <div className="tactical-card p-4 space-y-3">
             <p className="text-[11px] font-mono text-zinc-500 leading-relaxed">
               Search by conflict name or enter a numeric{" "}
               <span className="text-zinc-400">UCDP conflict_new_id</span> directly.
-              Numeric IDs can be found on the{" "}
+              Numeric IDs are available on the{" "}
               <a
                 href="https://ucdp.uu.se/exploratory"
                 target="_blank"
@@ -363,7 +446,7 @@ export default function LongitudinalTracker() {
               </button>
             </div>
 
-            {/* Search results dropdown */}
+            {/* Search results */}
             {searchResults !== null && !loading && (
               <div className="border border-zinc-700 rounded-sm bg-zinc-900/80 overflow-hidden">
                 {searchResults.length === 0 ? (
@@ -380,7 +463,7 @@ export default function LongitudinalTracker() {
           </div>
         </section>
 
-        {/* ── Loading state ── */}
+        {/* ── Loading ── */}
         {loading && (
           <div className="flex items-center justify-center gap-3 py-16 text-zinc-500 font-mono text-sm">
             <Loader2 className="w-5 h-5 animate-spin text-red-500" />
@@ -388,7 +471,7 @@ export default function LongitudinalTracker() {
           </div>
         )}
 
-        {/* ── Error banner ── */}
+        {/* ── Error ── */}
         {error && (
           <div className="flex items-start gap-2 bg-red-950/20 border border-red-800/40 rounded-sm px-4 py-3 text-sm font-mono text-red-400">
             <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
@@ -396,7 +479,7 @@ export default function LongitudinalTracker() {
           </div>
         )}
 
-        {/* ── Data sections (shown once loaded) ── */}
+        {/* ── Data sections ── */}
         {data && (
           <>
             {/* Conflict identity banner */}
@@ -444,7 +527,7 @@ export default function LongitudinalTracker() {
                   icon={BarChart2}
                   label="Years Tracked"
                   value={data.total_years}
-                  sub="UCDP annual records"
+                  sub={`${(data.dyad_breakdown || []).length || (data.dyads || []).length} combatant dyad${((data.dyad_breakdown || []).length || 1) !== 1 ? "s" : ""}`}
                   color="text-zinc-300"
                 />
               </div>
@@ -452,23 +535,30 @@ export default function LongitudinalTracker() {
 
             {/* ── 03 · Casualty Timeline ── */}
             <section className="space-y-3">
-              <SectionLabel num="03" title="Casualty Timeline — Yearly vs. Cumulative" />
+              <SectionLabel num="03" title="Casualty Timeline — Annual Deaths per Dyad vs. Cumulative" />
               <div className="tactical-card p-4">
-                <div className="flex flex-wrap items-center gap-4 mb-4 text-[10px] font-mono text-zinc-500">
-                  <span className="flex items-center gap-1.5">
-                    <span className="w-3 h-3 bg-amber-500/70 rounded-sm inline-block" />
-                    Annual battle deaths (best estimate)
-                  </span>
-                  <span className="flex items-center gap-1.5">
+
+                {/* Dyad colour legend */}
+                <div className="flex flex-wrap gap-x-4 gap-y-1.5 mb-4">
+                  {dyadList.map((name, i) => (
+                    <span key={name} className="flex items-center gap-1.5 text-[10px] font-mono text-zinc-500">
+                      <span
+                        className="w-2.5 h-2.5 rounded-sm inline-block flex-shrink-0"
+                        style={{ background: DYAD_COLORS[i % DYAD_COLORS.length], opacity: 0.8 }}
+                      />
+                      {truncate(name, 42)}
+                    </span>
+                  ))}
+                  <span className="flex items-center gap-1.5 text-[10px] font-mono text-zinc-600 ml-auto">
                     <span className="w-5 h-0.5 bg-red-500 inline-block" />
-                    Cumulative total (right axis)
+                    Cumulative (right axis)
                   </span>
                 </div>
 
                 <ResponsiveContainer width="100%" height={320}>
                   <ComposedChart
-                    data={data.timeline}
-                    margin={{ top: 8, right: 60, left: 10, bottom: 4 }}
+                    data={chartData}
+                    margin={{ top: 8, right: 64, left: 10, bottom: 4 }}
                   >
                     <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
                     <XAxis
@@ -479,7 +569,7 @@ export default function LongitudinalTracker() {
                     />
                     <YAxis
                       yAxisId="left"
-                      tickFormatter={tickFormatter}
+                      tickFormatter={fmtK}
                       tick={{ fill: "#71717a", fontSize: 10, fontFamily: "monospace" }}
                       axisLine={false}
                       tickLine={false}
@@ -488,20 +578,21 @@ export default function LongitudinalTracker() {
                     <YAxis
                       yAxisId="right"
                       orientation="right"
-                      tickFormatter={tickFormatter}
+                      tickFormatter={fmtK}
                       tick={{ fill: "#f87171", fontSize: 10, fontFamily: "monospace" }}
                       axisLine={false}
                       tickLine={false}
-                      width={52}
+                      width={56}
                     />
                     <Tooltip content={<ChartTooltip />} />
+
                     {data.peak_year && (
                       <ReferenceLine
                         yAxisId="left"
                         x={data.peak_year}
                         stroke="#f59e0b"
                         strokeDasharray="4 3"
-                        strokeOpacity={0.5}
+                        strokeOpacity={0.45}
                         label={{
                           value: "PEAK",
                           position: "top",
@@ -511,15 +602,24 @@ export default function LongitudinalTracker() {
                         }}
                       />
                     )}
-                    <Bar
-                      yAxisId="left"
-                      dataKey="best"
-                      name="Annual Deaths"
-                      fill="#f59e0b"
-                      fillOpacity={0.65}
-                      radius={[2, 2, 0, 0]}
-                      maxBarSize={36}
-                    />
+
+                    {/* One stacked Bar per dyad */}
+                    {dyadList.map((name, i) => (
+                      <Bar
+                        key={name}
+                        yAxisId="left"
+                        dataKey={name}
+                        name={name}
+                        stackId="dyads"
+                        fill={DYAD_COLORS[i % DYAD_COLORS.length]}
+                        fillOpacity={0.72}
+                        radius={
+                          i === dyadList.length - 1 ? [2, 2, 0, 0] : [0, 0, 0, 0]
+                        }
+                        maxBarSize={40}
+                      />
+                    ))}
+
                     <Line
                       yAxisId="right"
                       type="monotone"
@@ -535,30 +635,71 @@ export default function LongitudinalTracker() {
               </div>
             </section>
 
-            {/* ── 04 · Conflict Parties ── */}
-            {data.dyads.length > 0 && (
+            {/* ── 04 · Per-Dyad Breakdown ── */}
+            {(data.dyad_breakdown?.length > 0) && (
               <section className="space-y-3">
-                <SectionLabel num="04" title="Combatant Dyads" />
+                <SectionLabel num="04" title="Per-Dyad Death Toll — All Dyads Ranked" />
                 <div className="tactical-card overflow-hidden">
                   <table className="w-full text-left">
                     <thead>
                       <tr className="border-b border-zinc-800">
-                        <th className="py-2 px-3 text-[9px] font-mono text-zinc-600 uppercase tracking-wider">Side A</th>
-                        <th className="py-2 px-3" />
-                        <th className="py-2 px-3 text-[9px] font-mono text-zinc-600 uppercase tracking-wider">Side B</th>
-                        <th className="py-2 px-3 text-[9px] font-mono text-zinc-600 uppercase tracking-wider">Period</th>
+                        <th className="py-2 px-3 text-[9px] font-mono text-zinc-600 uppercase tracking-wider w-6">#</th>
+                        <th className="py-2 px-3 text-[9px] font-mono text-zinc-600 uppercase tracking-wider">Dyad</th>
+                        <th className="py-2 px-3 text-[9px] font-mono text-zinc-600 uppercase tracking-wider text-right">Total Deaths</th>
+                        <th className="py-2 px-3 text-[9px] font-mono text-zinc-600 uppercase tracking-wider hidden md:table-cell">Peak Year</th>
+                        <th className="py-2 px-3 text-[9px] font-mono text-zinc-600 uppercase tracking-wider hidden md:table-cell">Period</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {data.dyads.map((d, i) => (
-                        <DyadRow key={i} dyad={d} />
+                      {data.dyad_breakdown.map((dyad, i) => (
+                        <tr
+                          key={dyad.dyad_name}
+                          className="border-b border-zinc-800/50 hover:bg-zinc-800/20 transition-colors"
+                        >
+                          <td className="py-2 px-3 text-[10px] font-mono text-zinc-600">{i + 1}</td>
+                          <td className="py-2 px-3">
+                            <div className="flex items-center gap-2">
+                              <span
+                                className="w-2 h-2 rounded-sm flex-shrink-0"
+                                style={{
+                                  background: i < MAX_DYADS_CHART
+                                    ? DYAD_COLORS[i % DYAD_COLORS.length]
+                                    : "#52525b",
+                                  opacity: 0.85,
+                                }}
+                              />
+                              <span className="text-xs font-mono text-zinc-300">
+                                {dyad.dyad_name}
+                              </span>
+                            </div>
+                          </td>
+                          <td className="py-2 px-3 text-right">
+                            <span className="text-sm font-bold font-mono text-red-400">
+                              {fmtNum(dyad.total_best)}
+                            </span>
+                            {data.total_deaths_best > 0 && (
+                              <span className="text-[10px] font-mono text-zinc-600 ml-1.5">
+                                {Math.round((dyad.total_best / data.total_deaths_best) * 100)}%
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-2 px-3 text-xs font-mono text-zinc-500 hidden md:table-cell">
+                            {dyad.peak_year}{" "}
+                            <span className="text-zinc-700">({fmtNum(dyad.peak_deaths)})</span>
+                          </td>
+                          <td className="py-2 px-3 text-[10px] font-mono text-zinc-600 hidden md:table-cell">
+                            {dyad.first_year}
+                            {dyad.last_year !== dyad.first_year ? ` – ${dyad.last_year}` : ""}
+                          </td>
+                        </tr>
                       ))}
                     </tbody>
                   </table>
                   <div className="flex items-center gap-1.5 px-3 py-2 border-t border-zinc-800 bg-zinc-900/30">
                     <Users className="w-3 h-3 text-zinc-700" />
                     <span className="text-[9px] font-mono text-zinc-700">
-                      {data.dyads.length} dyad{data.dyads.length !== 1 ? "s" : ""} · UCDP Dyadic Dataset v25.1
+                      {data.dyad_breakdown.length} dyad{data.dyad_breakdown.length !== 1 ? "s" : ""} ·
+                      UCDP Battle-Related Deaths + Dyadic Dataset v25.1
                     </span>
                   </div>
                 </div>
