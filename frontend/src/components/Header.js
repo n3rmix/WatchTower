@@ -37,7 +37,6 @@ const Header = ({ dataLastFetch, sourcesUsed = [], nextFetchIn, onRefresh }) => 
                 {[
                   { to: "/",                label: "Dashboard",       end: true  },
                   { to: "/surge-detector",  label: "Surge Detector",  end: false },
-                  { to: "/longitudinal",    label: "Longitudinal",    end: false },
                 ].map(({ to, label, end }) => (
                   <NavLink
                     key={to}
