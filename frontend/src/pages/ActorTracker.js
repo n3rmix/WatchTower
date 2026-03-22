@@ -103,11 +103,26 @@ const ActorTracker = () => {
 
   const fetchProfile = async (selectedActor) => {
     setActor(selectedActor);
-    setLoadingProfile(true);
-    setError(null);
     setEventsPage(0);
     setProfile(null);
     setPhase("profile");
+
+    // If the onesided response already embedded events (two-step approach),
+    // build the profile shape locally — no extra round-trip needed.
+    if (Array.isArray(selectedActor.events) && selectedActor.events.length > 0) {
+      setProfile({
+        events:         selectedActor.events,
+        total_events:   selectedActor.total_events   ?? selectedActor.events.length,
+        total_deaths:   selectedActor.total_deaths   ?? 0,
+        civilian_deaths: selectedActor.civilian_deaths ?? 0,
+        source_offices: selectedActor.source_offices ?? [],
+      });
+      return;
+    }
+
+    // Fallback: fetch events from the dedicated gedevents endpoint (actor name search).
+    setLoadingProfile(true);
+    setError(null);
     try {
       const res = await axios.get(`${API}/gedevents`, {
         params: {
