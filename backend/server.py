@@ -90,6 +90,8 @@ class ConflictData(BaseModel):
     country: str
     region: str
     total_deaths: int
+    deaths_low: Optional[int] = None
+    deaths_high: Optional[int] = None
     civilian_deaths: int
     military_deaths: int
     children_deaths: int
@@ -139,8 +141,14 @@ async def fetch_ucdp_deaths_for_country(
     country_id: str,
     session: aiohttp.ClientSession,
     api_key: Optional[str] = None,
-) -> Optional[int]:
-    """Fetch cumulative deaths from the UCDP GED API (gedevents) for a country.
+) -> Optional[Dict]:
+    """Fetch cumulative deaths and actor names from the UCDP GED API for a country.
+
+    Returns a dict with keys:
+      total   – sum of best-estimate deaths across all events
+      low     – sum of low-estimate deaths
+      high    – sum of high-estimate deaths
+      parties – sorted list of unique side_a / side_b actor names
 
     country_id is a comma-separated string of Gleditsch-Ward country codes,
     e.g. '369' for Ukraine or '678,679' for Yemen (spans two GW codes).
@@ -154,7 +162,8 @@ async def fetch_ucdp_deaths_for_country(
             headers["x-ucdp-access-token"] = api_key
         page_size = 1000
         page = 1
-        total = 0
+        total = low = high = 0
+        parties: set = set()
         while True:
             params = {"pagesize": page_size, "page": page, "Country": country_id}
             async with session.get(
@@ -167,31 +176,43 @@ async def fetch_ucdp_deaths_for_country(
                 results = data.get("Result", [])
                 if not results:
                     break
-                total += sum(int(event.get("best", 0) or 0) for event in results)
+                for event in results:
+                    total += int(event.get("best", 0) or 0)
+                    low   += int(event.get("low",  0) or 0)
+                    high  += int(event.get("high", 0) or 0)
+                    for side in ("side_a", "side_b"):
+                        name = (event.get(side) or "").strip()
+                        if name:
+                            parties.add(name)
                 if len(results) < page_size:
                     break
                 page += 1
-        logger.info(f"UCDP: country_id={country_id} → {total} deaths ({page} page(s))")
-        return total if total > 0 else None
+        if total <= 0:
+            return None
+        logger.info(f"UCDP: country_id={country_id} → {total} deaths (low={low}, high={high}, {len(parties)} actors, {page} page(s))")
+        return {"total": total, "low": low, "high": high, "parties": sorted(parties)}
     except Exception as e:
         logger.warning(f"UCDP fetch error for country_id={country_id}: {e}")
     return None
 
 
-async def fetch_ucdp_data() -> Dict[str, int]:
-    """Fetch UCDP deaths for all tracked conflicts. Returns {conflict_country: total_deaths}."""
+async def fetch_ucdp_data() -> Dict[str, Dict]:
+    """Fetch UCDP GED data for all tracked conflicts.
+
+    Returns {conflict_country: {"total": int, "low": int, "high": int, "parties": List[str]}}.
+    """
     api_key = get_ucdp_api_key()
-    results: Dict[str, int] = {}
+    results: Dict[str, Dict] = {}
     async with aiohttp.ClientSession(headers={"User-Agent": "WatchTower/1.0"}) as session:
         tasks = []
         keys = []
         for conflict_country, ucdp_country in UCDP_COUNTRY_MAP.items():
             keys.append(conflict_country)
             tasks.append(fetch_ucdp_deaths_for_country(ucdp_country, session, api_key))
-        totals = await asyncio.gather(*tasks, return_exceptions=True)
-        for key, total in zip(keys, totals):
-            if isinstance(total, int) and total is not None:
-                results[key] = total
+        raw = await asyncio.gather(*tasks, return_exceptions=True)
+        for key, item in zip(keys, raw):
+            if isinstance(item, dict):
+                results[key] = item
     logger.info(f"UCDP fetch complete: {len(results)}/{len(UCDP_COUNTRY_MAP)} countries updated")
     return results
 
@@ -576,6 +597,7 @@ def _build_records(
     ohchr_ukraine_civilian: Optional[int],
     ocha_gaza_total: Optional[int],
     iran_total: Optional[int] = None,
+    ucdp_rich: Optional[Dict[str, Dict]] = None,
 ) -> list:
     """
     Merge live death figures into baseline conflict records.
@@ -587,6 +609,16 @@ def _build_records(
         country = record['country']
         record['id'] = str(uuid.uuid4())
         record['last_updated'] = now.isoformat()
+        record['deaths_low'] = None
+        record['deaths_high'] = None
+
+        # Apply UCDP uncertainty bands and live actor names when available
+        if ucdp_rich and country in ucdp_rich:
+            ucdp = ucdp_rich[country]
+            record['deaths_low'] = ucdp.get('low') or None
+            record['deaths_high'] = ucdp.get('high') or None
+            if ucdp.get('parties'):
+                record['parties_involved'] = ucdp['parties']
 
         live_total: Optional[int] = primary_deaths.get(country)
 
@@ -663,10 +695,12 @@ async def scrape_conflict_data():
             logger.error(f"ACLED data fetch failed: {e}")
 
     # ── 2. UCDP free API as fallback / supplement ────────────────────────────
-    ucdp_deaths: Dict[str, int] = {}
+    ucdp_rich: Dict[str, Dict] = {}       # full GED data: total/low/high/parties
+    ucdp_totals: Dict[str, int] = {}      # just the best-estimate totals for _build_records
     try:
-        ucdp_deaths = await fetch_ucdp_data()
-        if ucdp_deaths:
+        ucdp_rich = await fetch_ucdp_data()
+        if ucdp_rich:
+            ucdp_totals = {k: v["total"] for k, v in ucdp_rich.items()}
             sources_used.append("UCDP")
     except Exception as e:
         logger.error(f"UCDP data fetch failed: {e}")
@@ -701,11 +735,11 @@ async def scrape_conflict_data():
         logger.warning("All live sources failed — using baseline conflict data")
 
     # ── 5. Build main conflicts (ACLED > UCDP priority) ──────────────────────
-    acled_or_ucdp: Dict[str, int] = {**ucdp_deaths, **acled_deaths}  # ACLED wins on overlap
-    conflicts = _build_records(now, acled_or_ucdp, ohchr_ukraine_civilian, ocha_gaza_total, iran_total)
+    acled_or_ucdp: Dict[str, int] = {**ucdp_totals, **acled_deaths}  # ACLED wins on overlap
+    conflicts = _build_records(now, acled_or_ucdp, ohchr_ukraine_civilian, ocha_gaza_total, iran_total, ucdp_rich=ucdp_rich)
 
     # ── 6. Build chart-only conflicts (UCDP + OHCHR/OCHA + Hengaw/IHR, no ACLED) ──
-    chart_conflicts = _build_records(now, ucdp_deaths, ohchr_ukraine_civilian, ocha_gaza_total, iran_total)
+    chart_conflicts = _build_records(now, ucdp_totals, ohchr_ukraine_civilian, ocha_gaza_total, iran_total, ucdp_rich=ucdp_rich)
     # Chart sources are always UCDP + OHCHR/OCHA — those are the chart data architecture.
     # The baseline figures are themselves derived from UCDP/OHCHR/OCHA at a fixed point in
     # time, so even when live fetches fail the attribution stays correct.

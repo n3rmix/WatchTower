@@ -53,6 +53,11 @@ const ConflictTable = ({ conflicts, dataLastFetch }) => {
                   <p className="font-mono text-red-500 font-bold text-lg">
                     {conflict.total_deaths.toLocaleString()}
                   </p>
+                  {conflict.deaths_low != null && conflict.deaths_high != null && (
+                    <p className="font-mono text-zinc-600 text-[10px] leading-tight mt-0.5" title="UCDP low–high estimate range">
+                      {conflict.deaths_low.toLocaleString()}–{conflict.deaths_high.toLocaleString()}
+                    </p>
+                  )}
                 </div>
 
                 <div className="col-span-2 text-right">

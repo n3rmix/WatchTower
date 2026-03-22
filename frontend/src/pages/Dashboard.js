@@ -98,8 +98,35 @@ const Dashboard = () => {
 
   const countryData = chartConflicts.map(c => ({
     country: c.country,
-    deaths: c.total_deaths
+    deaths: c.total_deaths,
+    deaths_low: c.deaths_low ?? null,
+    deaths_high: c.deaths_high ?? null,
   })).sort((a, b) => b.deaths - a.deaths).slice(0, 9);
+
+  const BarTooltip = ({ active, payload, label }) => {
+    if (!active || !payload?.length) return null;
+    const d = payload[0].payload;
+    const tooltipStyle = {
+      backgroundColor: '#121214',
+      border: '1px solid #27272a',
+      borderRadius: '2px',
+      fontFamily: 'JetBrains Mono, monospace',
+      fontSize: '12px',
+      padding: '8px 10px',
+      color: '#e4e4e7',
+    };
+    return (
+      <div style={tooltipStyle}>
+        <p style={{ marginBottom: 4, color: '#94a3b8' }}>{label}</p>
+        <p>Deaths: {d.deaths.toLocaleString()}</p>
+        {d.deaths_low != null && d.deaths_high != null && (
+          <p style={{ color: '#71717a', marginTop: 2 }}>
+            Range: {d.deaths_low.toLocaleString()}–{d.deaths_high.toLocaleString()}
+          </p>
+        )}
+      </div>
+    );
+  };
 
   if (loading) {
     return (
@@ -237,16 +264,7 @@ const Dashboard = () => {
                   tick={{ fill: '#94a3b8', fontSize: 10, fontFamily: 'JetBrains Mono' }}
                   tickFormatter={(value) => value.toLocaleString()}
                 />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: '#121214',
-                    border: '1px solid #27272a',
-                    borderRadius: '2px',
-                    fontFamily: 'JetBrains Mono, monospace',
-                    fontSize: '12px'
-                  }}
-                  formatter={(value) => value.toLocaleString()}
-                />
+                <Tooltip content={<BarTooltip />} />
                 <Bar dataKey="deaths" fill="#dc2626" radius={[2, 2, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
