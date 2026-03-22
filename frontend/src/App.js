@@ -1,6 +1,6 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import Dashboard from "./pages/Dashboard";
-import ActorTracker from "./pages/ActorTracker";
+import SurgeDetector from "./pages/SurgeDetector";
 import "./App.css";
 
 function App() {
@@ -9,7 +9,7 @@ function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/" element={<Dashboard />} />
-          <Route path="/actor-tracker" element={<ActorTracker />} />
+          <Route path="/surge-detector" element={<SurgeDetector />} />
         </Routes>
       </BrowserRouter>
     </div>

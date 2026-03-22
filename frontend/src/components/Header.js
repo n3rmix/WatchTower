@@ -35,8 +35,8 @@ const Header = ({ dataLastFetch, sourcesUsed = [], nextFetchIn, onRefresh }) => 
               <p className="text-xs text-zinc-500 font-mono uppercase tracking-wider">Global Conflict Monitoring</p>
               <nav className="flex items-center gap-1 mt-1.5">
                 {[
-                  { to: "/",               label: "Dashboard",      end: true  },
-                  { to: "/actor-tracker",  label: "Actor Tracker",  end: false },
+                  { to: "/",                label: "Dashboard",       end: true  },
+                  { to: "/surge-detector",  label: "Surge Detector",  end: false },
                 ].map(({ to, label, end }) => (
                   <NavLink
                     key={to}
