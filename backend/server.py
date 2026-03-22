@@ -908,6 +908,172 @@ async def get_chart_conflicts():
     return conflicts
 
 
+@api_router.get("/onesided")
+async def get_onesided_actors(gwno: str, years: str):
+    """Fetch One-Sided Violence perpetrators from the UCDP onesided dataset.
+
+    gwno  – Gleditsch-Ward code(s), comma-separated (e.g. "369" or "678,679")
+    years – comma-separated year integers, e.g. "2020,2021,2022"
+
+    Returns actors aggregated across all requested years, sorted by
+    total_deaths descending.
+    """
+    api_key = get_ucdp_api_key()
+    ucdp_hdrs: Dict[str, str] = {}
+    if api_key:
+        ucdp_hdrs["x-ucdp-access-token"] = api_key
+
+    year_list = [y.strip() for y in years.split(",") if y.strip().isdigit()]
+    if not year_list:
+        raise HTTPException(status_code=400, detail="No valid years provided")
+
+    gwno_list = [g.strip() for g in gwno.split(",") if g.strip()]
+    url = f"{UCDP_API_BASE}/onesided/{UCDP_VERSION}"
+    actors_map: Dict[str, Dict] = {}
+
+    async with aiohttp.ClientSession(headers={"User-Agent": "WatchTower/1.0"}) as session:
+        for gwno_single in gwno_list:
+            for year in year_list:
+                pg = 1
+                while True:
+                    params = {"Country": gwno_single, "Year": year, "pagesize": 1000, "page": pg}
+                    try:
+                        async with session.get(
+                            url, params=params, headers=ucdp_hdrs,
+                            timeout=aiohttp.ClientTimeout(total=30),
+                        ) as resp:
+                            if resp.status != 200:
+                                logger.warning(f"UCDP onesided HTTP {resp.status} gwno={gwno_single} year={year}")
+                                break
+                            data = await resp.json()
+                            results = data.get("Result", [])
+                            if not results:
+                                break
+                            for rec in results:
+                                actor_id = str(rec.get("actor_id") or rec.get("side_a_id") or "")
+                                name = (rec.get("side_a") or "Unknown").strip()
+                                deaths = int(rec.get("best", 0) or 0)
+                                low = int(rec.get("low", 0) or 0)
+                                high = int(rec.get("high", 0) or 0)
+                                rec_year = int(rec.get("year", year))
+                                key = actor_id or name
+                                if key not in actors_map:
+                                    actors_map[key] = {
+                                        "actor_id": actor_id,
+                                        "actor_name": name,
+                                        "years_active": [],
+                                        "total_deaths": 0,
+                                        "deaths_low": 0,
+                                        "deaths_high": 0,
+                                        "per_year": {},
+                                    }
+                                entry = actors_map[key]
+                                if rec_year not in entry["years_active"]:
+                                    entry["years_active"].append(rec_year)
+                                entry["total_deaths"] += deaths
+                                entry["deaths_low"] += low
+                                entry["deaths_high"] += high
+                                yr_key = str(rec_year)
+                                entry["per_year"][yr_key] = entry["per_year"].get(yr_key, 0) + deaths
+                            if len(results) < 1000:
+                                break
+                            pg += 1
+                    except Exception as exc:
+                        logger.warning(f"UCDP onesided error gwno={gwno_single} year={year}: {exc}")
+                        break
+
+    actors = sorted(actors_map.values(), key=lambda x: x["total_deaths"], reverse=True)
+    for a in actors:
+        a["years_active"] = sorted(a["years_active"])
+    logger.info(f"UCDP onesided: gwno={gwno} years={years} → {len(actors)} actors")
+    return {"actors": actors, "total_actors": len(actors)}
+
+
+@api_router.get("/gedevents")
+async def get_ged_actor_events(
+    actor: str,
+    gwno: Optional[str] = None,
+    years: Optional[str] = None,
+):
+    """Fetch UCDP GED events (TypeOfViolence=3, one-sided) for a specific actor.
+
+    actor – actor name string (side_a from the onesided dataset)
+    gwno  – optional GW code(s) to narrow by country
+    years – optional comma-separated years
+
+    Returns up to 1 000 events sorted newest first, with summary statistics
+    and deduplicated source offices for compliance/CTI traceability.
+    """
+    api_key = get_ucdp_api_key()
+    ucdp_hdrs: Dict[str, str] = {}
+    if api_key:
+        ucdp_hdrs["x-ucdp-access-token"] = api_key
+
+    gwno_list = [g.strip() for g in gwno.split(",")] if gwno else [None]
+    year_list = [y.strip() for y in years.split(",") if y.strip().isdigit()] if years else [None]
+    url = f"{UCDP_API_BASE}/gedevents/{UCDP_VERSION}"
+    MAX_EVENTS = 1000
+    all_events: List[Dict] = []
+
+    async with aiohttp.ClientSession(headers={"User-Agent": "WatchTower/1.0"}) as session:
+        for gwno_single in gwno_list:
+            for year in year_list:
+                if len(all_events) >= MAX_EVENTS:
+                    break
+                pg = 1
+                while True:
+                    params = {"TypeOfViolence": 3, "Actor": actor, "pagesize": 500, "page": pg}
+                    if gwno_single:
+                        params["Country"] = gwno_single
+                    if year:
+                        params["Year"] = year
+                    try:
+                        async with session.get(
+                            url, params=params, headers=ucdp_hdrs,
+                            timeout=aiohttp.ClientTimeout(total=45),
+                        ) as resp:
+                            if resp.status != 200:
+                                logger.warning(f"UCDP gedevents HTTP {resp.status} actor={actor!r}")
+                                break
+                            data = await resp.json()
+                            results = data.get("Result", [])
+                            if not results:
+                                break
+                            all_events.extend(results)
+                            if len(results) < 500 or len(all_events) >= MAX_EVENTS:
+                                break
+                            pg += 1
+                    except Exception as exc:
+                        logger.warning(f"UCDP gedevents error actor={actor!r}: {exc}")
+                        break
+
+    # Sort newest first, then deduplicate by event id
+    all_events.sort(key=lambda e: e.get("date_start", ""), reverse=True)
+    seen: set = set()
+    unique: List[Dict] = []
+    for ev in all_events:
+        eid = ev.get("id")
+        if eid not in seen:
+            seen.add(eid)
+            unique.append(ev)
+
+    total_deaths = sum(int(e.get("best", 0) or 0) for e in unique)
+    civilian_deaths = sum(int(e.get("deaths_civilians", 0) or 0) for e in unique)
+    source_offices = sorted({e["source_office"] for e in unique if e.get("source_office")})
+
+    logger.info(
+        f"UCDP gedevents: actor={actor!r} gwno={gwno} years={years} "
+        f"→ {len(unique)} events, {total_deaths} deaths"
+    )
+    return {
+        "events": unique[:MAX_EVENTS],
+        "total_events": len(unique),
+        "total_deaths": total_deaths,
+        "civilian_deaths": civilian_deaths,
+        "source_offices": source_offices,
+    }
+
+
 @api_router.get("/chart-stats")
 async def get_chart_stats():
     """Aggregated casualty stats from UCDP + OHCHR/OCHA data only (used by charts)."""
