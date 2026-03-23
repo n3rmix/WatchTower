@@ -10,13 +10,15 @@ A comprehensive, data-driven platform for tracking ongoing global conflicts, cas
 
 [Features](#features) • [Tech Stack](#tech-stack) • [Installation](#installation) • [Data Sources](#data-sources) • [API](#api-documentation)
 
+
+
 </div>
 
 ---
 
 ## Overview
 
-WatchTower is a real-time conflict monitoring system that aggregates casualty data, armed group information, and geopolitical news from credible international sources. The platform provides transparent, data-backed insights into 9 major global conflicts affecting millions of people worldwide.
+WatchTower is a real-time conflict monitoring system that aggregates casualty data, armed group information, and geopolitical news from credible international sources. The platform provides transparent, data-backed insights into 9 major global conflicts affecting millions of people worldwide — plus a full historical perspective across every UCDP-tracked conflict since 1946.
 
 **Total Tracked:** 9 active conflicts | 60+ news articles | Live data from UCDP · OHCHR/OCHA — refreshed every hour
 
@@ -42,6 +44,14 @@ WatchTower is a real-time conflict monitoring system that aggregates casualty da
   - Deaths by country bar chart — sourced exclusively from UCDP + OHCHR/OCHA
   - Responsive design with tactical/situation room aesthetic
 
+- **Human Cost Treemap** (`/human-cost`)
+  - Zoomable treemap spanning **every UCDP-tracked conflict since 1946** (~200+ conflicts across 5 world regions)
+  - **Tile area ∝ cumulative `bd_best` battle-deaths** since each conflict's onset — giving an immediate proportional view of global suffering
+  - **Drill-down:** top-level tiles are world regions (Africa, Asia, Middle East, Europe, Americas); click any region to zoom into its individual conflicts at full canvas size; breadcrumb + back button to return
+  - **Colour temperature** encodes recency — cool blue for conflicts last active decades ago, deep red for conflicts with deaths recorded in 2023–24
+  - Floating hover tooltip showing conflict name, location, cumulative deaths, and last recorded year
+  - Colour-scale legend with year labels rendered beneath the chart
+
 - **Actor Accountability Tracker** (`/actor-tracker`)
   - Dedicated view for One-Sided Violence perpetrator profiling backed by the UCDP datasets
   - **Step 1 — Configure:** Select a country (all 8 UCDP-covered conflicts) and any combination of years (2015–2024 multi-select)
@@ -58,9 +68,10 @@ WatchTower is a real-time conflict monitoring system that aggregates casualty da
 
 - **Hourly Live Data Refresh**
   - Casualty figures pulled from primary sources every hour via APScheduler
-  - Two parallel datasets produced each cycle:
+  - Three datasets produced each cycle:
     - **All conflicts** (ACLED → UCDP priority) — stat cards and detail table
     - **Chart conflicts** (UCDP + OHCHR/OCHA only) — Casualty Breakdown and Deaths by Country charts
+    - **Treemap data** — full UCDP battledeaths dataset aggregated by conflict, cached for the Human Cost page
   - Civilian/military/children figures scaled proportionally from live totals
   - Manual refresh available on demand via the header button
 
@@ -251,6 +262,37 @@ Aggregated casualty statistics from the full conflict dataset.
 ### `GET /api/chart-stats`
 Aggregated statistics from the UCDP + OHCHR/OCHA dataset only. Used by the Casualty Breakdown chart.
 
+### `GET /api/treemap`
+Full UCDP battledeaths dataset (1946–present) aggregated by conflict for the Human Cost treemap. Served from an in-memory cache that is refreshed hourly; first request triggers a live fetch if the cache is cold.
+
+```json
+{
+  "regions": [
+    {
+      "name": "Africa",
+      "total_deaths": 3500000,
+      "last_year": 2023,
+      "conflicts": [
+        {
+          "conflict_id": 336,
+          "name": "Ethiopia (OAU)",
+          "location": "Ethiopia",
+          "region": "Africa",
+          "total_deaths": 1500000,
+          "last_year": 2022
+        }
+      ]
+    }
+  ],
+  "total_conflicts": 245,
+  "total_deaths": 8500000,
+  "year_range": [1946, 2023],
+  "fetched_at": "2026-03-23T10:00:00+00:00"
+}
+```
+
+Regions are sorted by `total_deaths` descending; conflicts within each region are likewise sorted. `last_year` is the most recent year in which `bd_best > 0` for that conflict or region, and drives the cool→warm colour scale on the treemap.
+
 ### `GET /api/onesided?gwno=&years=`
 Queries the **UCDP One-Sided Violence dataset** for a country and multi-year range. Returns actors who perpetrate systematic violence against civilians, aggregated across all requested years.
 
@@ -350,7 +392,8 @@ Every hour (APScheduler):
     │     └─ chart_conflicts → UCDP + OHCHR/OCHA only (charts)
     ├─ Proportionally scale civilian/military/children from live totals
     ├─ Persist both datasets to MongoDB
-    └─ Store fetch timestamp, sources, chart_sources in system_metadata
+    ├─ Store fetch timestamp, sources, chart_sources in system_metadata
+    └─ Rebuild treemap cache (UCDP battledeaths, all conflicts 1946–present)
 
 Frontend polls every 5 min (Dashboard):
     ├─ GET /api/conflicts       → detail table
@@ -359,6 +402,13 @@ Frontend polls every 5 min (Dashboard):
     ├─ GET /api/chart-stats     → Casualty Breakdown chart
     ├─ GET /api/news            → news ticker
     └─ GET /api/last-update     → header timestamps + source pills
+
+Human Cost Treemap (/human-cost) — on page load:
+    └─ GET /api/treemap
+          └─ UCDP battledeaths/25.1 (paginated, all years)
+               → aggregated by conflict_id (sum bd_best, max year, region)
+               → grouped into 5 UCDP geographic regions
+               → returned as sorted region + conflict tree
 
 Actor Accountability Tracker (/actor-tracker) — on demand:
     ├─ GET /api/onesided?gwno=&years=
@@ -391,6 +441,7 @@ Contributions are welcome. Areas for improvement:
 - [x] World map / globe visualization
 - [x] Casualty heatmap (conflicts × categories)
 - [x] Actor accountability tracker (UCDP One-Sided Violence + GED cross-reference)
+- [x] Human Cost treemap — all UCDP conflicts 1946–present, proportional by cumulative deaths
 - [ ] Conflict timeline view
 
 **Medium Priority**

@@ -85,6 +85,18 @@ ACLED_COUNTRY_MAP = {
     'Iran': 'Iran',
 }
 
+# UCDP geographic region code → human-readable name
+UCDP_REGION_MAP: Dict[int, str] = {
+    1: "Europe",
+    2: "Middle East",
+    3: "Asia",
+    4: "Africa",
+    5: "Americas",
+}
+
+# In-memory cache for treemap data (refreshed hourly alongside other data)
+_treemap_cache: Optional[Dict] = None
+
 # Models
 class ConflictData(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -803,14 +815,151 @@ async def scrape_conflict_data():
     return conflicts
 
 
+# ─── Treemap / Human Cost data ────────────────────────────────────────────────
+
+async def fetch_treemap_data() -> Dict:
+    """
+    Fetch the full UCDP battledeaths dataset and aggregate per conflict for the
+    Human Cost treemap.
+
+    Aggregates dyad-year rows into conflict-level totals:
+      - total_deaths  : sum of bd_best across all years and dyads
+      - last_year     : most recent year with recorded deaths (drives tile colour)
+      - region        : UCDP geographic region code → name
+
+    Result is cached in _treemap_cache and refreshed hourly.
+    """
+    global _treemap_cache
+
+    api_key = get_ucdp_api_key()
+    headers = {"x-ucdp-access-token": api_key} if api_key else {}
+    url = f"{UCDP_API_BASE}/battledeaths/{UCDP_VERSION}"
+
+    # conflict_id → aggregated record
+    conflict_agg: Dict[int, Dict] = {}
+
+    page = 1
+    total_pages = 1
+    timeout = aiohttp.ClientTimeout(total=180)
+
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        while page <= total_pages:
+            params: Dict = {"pagesize": 1000, "page": page}
+            try:
+                async with session.get(url, params=params, headers=headers) as resp:
+                    if resp.status != 200:
+                        body = await resp.text()
+                        logger.error(
+                            f"UCDP battledeaths API error page {page}: "
+                            f"HTTP {resp.status} — {body[:200]}"
+                        )
+                        break
+                    payload = await resp.json()
+            except Exception as exc:
+                logger.error(f"Error fetching UCDP battledeaths page {page}: {exc}")
+                break
+
+            total_pages = payload.get("totalpages", 1)
+            records = payload.get("Result", [])
+            logger.info(
+                f"Treemap fetch: page {page}/{total_pages}, "
+                f"{len(records)} records"
+            )
+
+            for rec in records:
+                cid = rec.get("conflict_id")
+                if cid is None:
+                    continue
+
+                bd = float(rec.get("bd_best") or 0)
+                year = int(rec.get("year") or 0)
+                region_raw = rec.get("region")
+                # region can be int or string depending on API version
+                try:
+                    region_code = int(region_raw) if region_raw is not None else 0
+                except (ValueError, TypeError):
+                    region_code = 0
+
+                if cid not in conflict_agg:
+                    conflict_agg[cid] = {
+                        "conflict_id": cid,
+                        "name": rec.get("conflict_name", "Unknown"),
+                        "location": rec.get("location", ""),
+                        "region_code": region_code,
+                        "total_deaths": 0.0,
+                        "last_year": 0,
+                    }
+
+                conflict_agg[cid]["total_deaths"] += bd
+                if year > conflict_agg[cid]["last_year"]:
+                    conflict_agg[cid]["last_year"] = year
+
+            page += 1
+
+    # Discard conflicts with no recorded deaths
+    conflicts = [c for c in conflict_agg.values() if c["total_deaths"] > 0]
+
+    # Finalise types
+    for c in conflicts:
+        c["total_deaths"] = int(round(c["total_deaths"]))
+        region_name = UCDP_REGION_MAP.get(c["region_code"], f"Other")
+        c["region"] = region_name
+        del c["region_code"]
+
+    # Group into regions
+    region_map: Dict[str, Dict] = {}
+    for c in conflicts:
+        rname = c["region"]
+        if rname not in region_map:
+            region_map[rname] = {
+                "name": rname,
+                "total_deaths": 0,
+                "last_year": 0,
+                "conflicts": [],
+            }
+        region_map[rname]["total_deaths"] += c["total_deaths"]
+        if c["last_year"] > region_map[rname]["last_year"]:
+            region_map[rname]["last_year"] = c["last_year"]
+        region_map[rname]["conflicts"].append(c)
+
+    # Sort conflicts within each region by deaths descending
+    for r in region_map.values():
+        r["conflicts"].sort(key=lambda x: x["total_deaths"], reverse=True)
+
+    # Sort regions by deaths descending
+    sorted_regions = sorted(
+        region_map.values(), key=lambda x: x["total_deaths"], reverse=True
+    )
+
+    result = {
+        "regions": sorted_regions,
+        "total_conflicts": len(conflicts),
+        "total_deaths": sum(c["total_deaths"] for c in conflicts),
+        "year_range": [
+            min((c["last_year"] for c in conflicts), default=1946),
+            max((c["last_year"] for c in conflicts), default=2024),
+        ],
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    _treemap_cache = result
+    logger.info(
+        f"Treemap cache updated: {len(conflicts)} conflicts across "
+        f"{len(sorted_regions)} regions, "
+        f"total deaths = {result['total_deaths']:,}"
+    )
+    return result
+
+
 # ─── Background refresh task ──────────────────────────────────────────────────
 
 async def refresh_all_data():
-    """Refresh both news articles and conflict casualty data from primary sources."""
+    """Refresh news, conflict casualty data, and treemap from primary sources."""
     logger.info("Starting hourly data refresh…")
     try:
         await fetch_rss_feeds()
         await scrape_conflict_data()
+        await fetch_treemap_data()
         logger.info("Hourly data refresh completed successfully")
     except Exception as e:
         logger.error(f"Error during data refresh: {e}")
@@ -912,267 +1061,42 @@ async def get_chart_conflicts():
 
 
 
-async def _fetch_ged_window(
-    session: aiohttp.ClientSession,
-    hdrs: Dict[str, str],
-    start_date: str,
-    end_date: str,
-    violence_types: str,
-) -> List[Dict]:
-    """Paginate through all GED Candidate events for a single date window."""
-    url = f"{UCDP_API_BASE}/gedevents/{UCDP_CANDIDATE_VERSION}"
-    all_events: List[Dict] = []
-    pg = 1
-    while True:
-        params: dict = {
-            "StartDate": start_date,
-            "EndDate": end_date,
-            "pagesize": 1000,
-            "page": pg,
-        }
-        if violence_types:
-            params["TypeOfViolence"] = violence_types
-        try:
-            async with session.get(
-                url, params=params, headers=hdrs,
-                timeout=aiohttp.ClientTimeout(total=45),
-            ) as resp:
-                if resp.status != 200:
-                    logger.warning(
-                        f"UCDP GED candidate HTTP {resp.status} "
-                        f"window={start_date}→{end_date} page={pg}"
-                    )
-                    break
-                data = await resp.json()
-                results = data.get("Result", [])
-                logger.info(
-                    f"GED candidate page={pg} window={start_date}→{end_date}: "
-                    f"{len(results)} events (TotalCount={data.get('TotalCount')})"
-                )
-                all_events.extend(results)
-                if len(results) < 1000:
-                    break
-                pg += 1
-        except Exception as exc:
-            logger.warning(f"UCDP GED candidate error window={start_date}→{end_date}: {exc}")
-            break
-    return all_events
-
-
-def _group_by_conflict(events: List[Dict]) -> Dict[str, Dict]:
-    """Aggregate GED events into per-conflict death-count buckets."""
-    groups: Dict[str, Dict] = {}
-    for ev in events:
-        cid = str(ev.get("conflict_new_id") or ev.get("conflict_id") or "")
-        if not cid:
-            continue
-        if cid not in groups:
-            groups[cid] = {
-                "conflict_new_id":  cid,
-                "conflict_name":    ev.get("conflict_name") or "",
-                "country":          ev.get("country") or "",
-                "gwno_loc":         ev.get("gwno_loc") or "",
-                "type_of_violence": int(ev.get("type_of_violence") or 0),
-                "side_a":           ev.get("side_a") or "",
-                "side_b":           ev.get("side_b") or "",
-                "event_count": 0,
-                "best": 0,
-                "low":  0,
-                "high": 0,
-            }
-        g = groups[cid]
-        g["event_count"] += 1
-        g["best"] += int(ev.get("best", 0) or 0)
-        g["low"]  += int(ev.get("low",  0) or 0)
-        g["high"] += int(ev.get("high", 0) or 0)
-    return groups
-
-
-@api_router.get("/surge")
-async def get_surge_detector(
-    window: int = 30,
-    violence_types: str = "1,2,3",
-    end_date: str = "",
-):
-    """Conflict Escalation Surge Detector using UCDP GED Candidate data.
-
-    Slides two back-to-back windows of equal length over the GED Candidate
-    dataset (version 26.0.1), compares violence intensity per conflict, and
-    returns a probabilistic escalation signal.
-
-    Algorithm:
-      1. current window  = [end_date − window, end_date]
-      2. prior window    = [end_date − 2×window, end_date − window]
-      3. Fetch both windows in parallel via StartDate/EndDate filters
-      4. Group each by conflict_new_id, sum best/low/high
-      5. Compute escalation_ratio and confidence-band status:
-           confirmed → current.low  > prior.high  (bands do not overlap)
-           probable  → current.best > prior.best×1.5 AND current.low ≥ prior.best
-           possible  → current.best > prior.best×1.25
-           declining → current.best < prior.best×0.5
-           new       → prior.best == 0, current.best > 0
-      6. Enrich top-10 surging conflicts with annual battledeaths (bd_best)
-         for historical context.
-
-    window         – rolling window length in days: 30 | 60 | 90
-    violence_types – comma-separated TypeOfViolence filter (default: 1,2,3)
-    end_date       – window end YYYY-MM-DD (default: today UTC)
+@api_router.get("/treemap")
+async def get_treemap():
     """
-    if window not in (30, 60, 90):
-        raise HTTPException(status_code=400, detail="window must be 30, 60, or 90")
+    Return UCDP battledeaths aggregated by conflict for the Human Cost treemap.
 
-    api_key = get_ucdp_api_key()
-    ucdp_hdrs: Dict[str, str] = {}
-    if api_key:
-        ucdp_hdrs["x-ucdp-access-token"] = api_key
-
-    # Build window boundaries
-    try:
-        end_dt = datetime.fromisoformat(end_date).date() if end_date else datetime.now(timezone.utc).date()
-    except ValueError:
-        end_dt = datetime.now(timezone.utc).date()
-
-    curr_end    = end_dt
-    curr_start  = end_dt  - timedelta(days=window)
-    prior_end   = curr_start
-    prior_start = curr_start - timedelta(days=window)
-
-    curr_start_s  = curr_start.isoformat()
-    curr_end_s    = curr_end.isoformat()
-    prior_start_s = prior_start.isoformat()
-    prior_end_s   = prior_end.isoformat()
-
-    async with aiohttp.ClientSession(headers={"User-Agent": "WatchTower/1.0"}) as session:
-
-        # ── Fetch both windows in parallel ────────────────────────────────────
-        curr_events, prior_events = await asyncio.gather(
-            _fetch_ged_window(session, ucdp_hdrs, curr_start_s,  curr_end_s,   violence_types),
-            _fetch_ged_window(session, ucdp_hdrs, prior_start_s, prior_end_s,  violence_types),
-        )
-        logger.info(
-            f"Surge: current={len(curr_events)} events "
-            f"({curr_start_s}→{curr_end_s}), "
-            f"prior={len(prior_events)} events "
-            f"({prior_start_s}→{prior_end_s})"
-        )
-
-        curr_grp  = _group_by_conflict(curr_events)
-        prior_grp = _group_by_conflict(prior_events)
-
-        # ── Score every conflict seen in either window ─────────────────────
-        conflicts: List[Dict] = []
-        for cid in set(curr_grp) | set(prior_grp):
-            cur = curr_grp.get(cid)
-            pri = prior_grp.get(cid)
-            meta = cur or pri  # whichever has richer metadata
-
-            c_best = cur["best"] if cur else 0
-            c_low  = cur["low"]  if cur else 0
-            c_high = cur["high"] if cur else 0
-            c_ev   = cur["event_count"] if cur else 0
-
-            p_best = pri["best"] if pri else 0
-            p_low  = pri["low"]  if pri else 0
-            p_high = pri["high"] if pri else 0
-            p_ev   = pri["event_count"] if pri else 0
-
-            # Skip conflicts with zero activity in both windows
-            if c_best == 0 and p_best == 0:
-                continue
-
-            if p_best == 0:
-                status = "new"
-                ratio  = None
-                score  = 100
-                delta  = c_best
-                pct    = None
-            else:
-                ratio = round(c_best / p_best, 3)
-                delta = c_best - p_best
-                pct   = round((delta / p_best) * 100, 1)
-                # Confidence-band comparison
-                if c_low > p_high:
-                    status = "confirmed"   # no band overlap
-                elif c_best > p_best * 1.5 and c_low >= p_best:
-                    status = "probable"
-                elif c_best > p_best * 1.25:
-                    status = "possible"
-                elif c_best < p_best * 0.5:
-                    status = "declining"
-                else:
-                    status = "stable"
-                score = min(100, max(0, round((ratio - 1) * 50)))
-
-            conflicts.append({
-                "conflict_new_id":  meta["conflict_new_id"],
-                "conflict_name":    meta["conflict_name"],
-                "country":          meta["country"],
-                "gwno_loc":         meta["gwno_loc"],
-                "type_of_violence": meta["type_of_violence"],
-                "side_a":           meta["side_a"],
-                "side_b":           meta["side_b"],
-                "current":  {"events": c_ev, "best": c_best, "low": c_low,  "high": c_high},
-                "prior":    {"events": p_ev, "best": p_best, "low": p_low,  "high": p_high},
-                "surge_score":      score,
-                "escalation_ratio": ratio,
-                "status":           status,
-                "delta_best":       delta,
-                "pct_change":       pct,
-                "annual_deaths":    {},
-            })
-
-        # Sort: new/confirmed first, then by score desc, then by current deaths desc
-        _STATUS_ORDER = {"new": 0, "confirmed": 1, "probable": 2,
-                         "possible": 3, "stable": 4, "declining": 5}
-        conflicts.sort(key=lambda x: (
-            _STATUS_ORDER.get(x["status"], 9),
-            -x["surge_score"],
-            -x["current"]["best"],
-        ))
-
-        # ── Enrich top-10 surging conflicts with annual battledeaths ─────────
-        bd_url  = f"{UCDP_API_BASE}/battledeaths/{UCDP_VERSION}"
-        cur_yr  = end_dt.year
-        surging = [c for c in conflicts if c["status"] in ("new", "confirmed", "probable")][:10]
-
-        for conflict in surging:
-            cid    = conflict["conflict_new_id"]
-            annual: Dict[str, int] = {}
-            for yr in (cur_yr, cur_yr - 1, cur_yr - 2):
-                try:
-                    async with session.get(
-                        bd_url,
-                        params={"Conflict": cid, "Year": yr, "pagesize": 100},
-                        headers=ucdp_hdrs,
-                        timeout=aiohttp.ClientTimeout(total=15),
-                    ) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            for rec in data.get("Result", []):
-                                yr_key = str(rec.get("year", yr))
-                                bd = int(rec.get("bd_best") or rec.get("best") or 0)
-                                annual[yr_key] = annual.get(yr_key, 0) + bd
-                except Exception:
-                    pass
-            conflict["annual_deaths"] = annual
-
-    logger.info(
-        f"Surge detector: window={window}d types={violence_types} end={curr_end_s} "
-        f"→ {len(conflicts)} conflicts, "
-        f"{sum(1 for c in conflicts if c['status'] in ('new','confirmed','probable'))} surging"
-    )
-    return {
-        "meta": {
-            "window_days":     window,
-            "violence_types":  violence_types,
-            "current_window":  {"start": curr_start_s, "end": curr_end_s},
-            "prior_window":    {"start": prior_start_s, "end": prior_end_s},
-            "generated_at":    datetime.now(timezone.utc).isoformat(),
-            "total_conflicts": len(conflicts),
-            "n_surging":       sum(1 for c in conflicts if c["status"] in ("new","confirmed","probable")),
-        },
-        "conflicts": conflicts,
+    Response shape:
+    {
+        "regions": [
+            {
+                "name": "Africa",
+                "total_deaths": 1500000,
+                "last_year": 2023,
+                "conflicts": [
+                    {"conflict_id": 123, "name": "...", "total_deaths": 500000,
+                     "last_year": 2022, "location": "Ethiopia", "region": "Africa"},
+                    ...
+                ]
+            },
+            ...
+        ],
+        "total_conflicts": 245,
+        "total_deaths": 8500000,
+        "year_range": [1946, 2023],
+        "fetched_at": "..."
     }
+    """
+    global _treemap_cache
+    if _treemap_cache is not None:
+        return _treemap_cache
+
+    # Cache miss — fetch synchronously on first request
+    try:
+        return await fetch_treemap_data()
+    except Exception as exc:
+        logger.error(f"Treemap fetch failed: {exc}")
+        raise HTTPException(status_code=503, detail="Unable to fetch treemap data from UCDP")
 
 
 @api_router.get("/chart-stats")

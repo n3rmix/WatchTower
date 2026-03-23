@@ -1,4 +1,4 @@
-import { Globe, RefreshCw, Database, AlertTriangle } from "lucide-react";
+import { Globe, RefreshCw, Database, AlertTriangle, Map } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import { Button } from "./ui/button";
 
@@ -33,27 +33,6 @@ const Header = ({ dataLastFetch, sourcesUsed = [], nextFetchIn, onRefresh }) => 
                 Project WATCHTOWER
               </h1>
               <p className="text-xs text-zinc-500 font-mono uppercase tracking-wider">Global Conflict Monitoring</p>
-              <nav className="flex items-center gap-1 mt-1.5">
-                {[
-                  { to: "/",                label: "Dashboard",       end: true  },
-                  { to: "/surge-detector",  label: "Surge Detector",  end: false },
-                ].map(({ to, label, end }) => (
-                  <NavLink
-                    key={to}
-                    to={to}
-                    end={end}
-                    className={({ isActive }) =>
-                      `text-[9px] font-mono uppercase tracking-wider px-2 py-0.5 rounded-sm border transition-colors ${
-                        isActive
-                          ? "border-red-700/60 bg-red-950/40 text-red-400"
-                          : "border-zinc-800 text-zinc-600 hover:text-zinc-400 hover:border-zinc-700"
-                      }`
-                    }
-                  >
-                    {label}
-                  </NavLink>
-                ))}
-              </nav>
               <p className="text-xs text-zinc-600 font-mono mt-0.5">
                 Data courtesy of{" "}
                 <a
@@ -68,6 +47,37 @@ const Header = ({ dataLastFetch, sourcesUsed = [], nextFetchIn, onRefresh }) => 
               </p>
             </div>
           </div>
+
+          {/* Centre: page navigation */}
+          <nav className="hidden md:flex items-center gap-1">
+            <NavLink
+              to="/"
+              end
+              className={({ isActive }) =>
+                `flex items-center gap-1.5 px-3 py-1 rounded-sm text-xs font-mono uppercase tracking-wider transition-colors border ${
+                  isActive
+                    ? "bg-zinc-800 border-zinc-700 text-white"
+                    : "border-transparent text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900"
+                }`
+              }
+            >
+              <Globe className="w-3.5 h-3.5" />
+              Dashboard
+            </NavLink>
+            <NavLink
+              to="/human-cost"
+              className={({ isActive }) =>
+                `flex items-center gap-1.5 px-3 py-1 rounded-sm text-xs font-mono uppercase tracking-wider transition-colors border ${
+                  isActive
+                    ? "bg-zinc-800 border-zinc-700 text-white"
+                    : "border-transparent text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900"
+                }`
+              }
+            >
+              <Map className="w-3.5 h-3.5" />
+              Human Cost
+            </NavLink>
+          </nav>
 
           {/* Right: timestamps + buttons */}
           <div className="flex items-center gap-3">
