@@ -54,8 +54,25 @@ RSS_FEEDS = [
 # UCDP API configuration
 UCDP_API_BASE = "https://ucdpapi.pcr.uu.se/api"
 UCDP_VERSION = "25.1"
-# GED Candidate dataset — near-real-time monthly release, higher version number
-UCDP_CANDIDATE_VERSION = os.environ.get("UCDP_CANDIDATE_VERSION", "26.0.1")
+# GED Candidate dataset — near-real-time monthly release, higher version number.
+# Versions follow the pattern YY.0.M (e.g. 26.0.3 = March 2026).
+# If the env var is not set we compute the two most recent plausible versions
+# (current month + previous month) and probe for the latest available one at
+# request time to avoid the hardcoded version going stale.
+_UCDP_CANDIDATE_VERSION_OVERRIDE = os.environ.get("UCDP_CANDIDATE_VERSION", "")
+
+def _candidate_versions_to_try() -> List[str]:
+    """Return candidate version strings newest-first based on today's date."""
+    today = datetime.now(timezone.utc).date()
+    versions: List[str] = []
+    for delta in range(3):            # current month, previous, two months back
+        month = today.month - delta
+        year  = today.year
+        while month <= 0:
+            month += 12
+            year  -= 1
+        versions.append(f"{year % 100}.0.{month}")
+    return versions
 
 # Country IDs for the UCDP API Country= parameter (Gleditsch-Ward codes).
 # The parameter accepts comma-separated IDs, which is used where a conflict
@@ -1151,9 +1168,10 @@ async def _fetch_clock_events(
     country_code: str,
     start_date: str,
     end_date: str,
+    version: str = "",
 ) -> List[Dict]:
     """Fetch all GED Candidate events for a country over a date range."""
-    url = f"{UCDP_API_BASE}/gedevents/{UCDP_CANDIDATE_VERSION}"
+    url = f"{UCDP_API_BASE}/gedevents/{version or _UCDP_CANDIDATE_VERSION_OVERRIDE or _candidate_versions_to_try()[0]}"
     all_events: List[Dict] = []
     pg = 1
     while True:
@@ -1214,10 +1232,32 @@ async def get_humanitarian_clock(
     start_date = (today - timedelta(days=lookback_days)).isoformat()
     end_date   = today.isoformat()
 
+    # Resolve the best available GED Candidate version.
+    # If an env override is set, use it directly; otherwise probe newest→oldest.
     async with aiohttp.ClientSession(headers={"User-Agent": "WatchTower/1.0"}) as session:
+        if _UCDP_CANDIDATE_VERSION_OVERRIDE:
+            active_version = _UCDP_CANDIDATE_VERSION_OVERRIDE
+        else:
+            active_version = _candidate_versions_to_try()[-1]  # fallback = oldest
+            for v in _candidate_versions_to_try():
+                probe_url = f"{UCDP_API_BASE}/gedevents/{v}"
+                try:
+                    async with session.get(
+                        probe_url,
+                        params={"Country": "369", "pagesize": 1, "page": 1},
+                        headers=ucdp_hdrs,
+                        timeout=aiohttp.ClientTimeout(total=10),
+                    ) as probe_resp:
+                        if probe_resp.status == 200:
+                            active_version = v
+                            break
+                except Exception:
+                    pass
+        logger.info(f"Humanitarian clock using GED Candidate version: {active_version}")
+
         country_items  = list(CLOCK_COUNTRY_MAP.items())
         raw_results    = await asyncio.gather(*[
-            _fetch_clock_events(session, ucdp_hdrs, gw_code, start_date, end_date)
+            _fetch_clock_events(session, ucdp_hdrs, gw_code, start_date, end_date, version=active_version)
             for _, gw_code in country_items
         ])
 
