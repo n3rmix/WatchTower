@@ -1415,18 +1415,17 @@ async def get_humanitarian_clock(
     conflicts: List[Dict] = []
     for (country, _), events in zip(country_items, raw_results):
         if not events:
+            # No API events at all — check static baseline before giving up
+            static_esc_date = None
+            static_days = effective_lookback
+            if country in static_escalation:
+                try:
+                    static_dt = datetime.fromisoformat(static_escalation[country]).date()
+                    static_days = (today - static_dt).days
+                    static_esc_date = static_escalation[country]
+                except ValueError:
+                    pass
             conflicts.append({
-                # No API events at all — check static baseline before giving up
-                static_esc_date = None
-                static_days = effective_lookback
-                if country in static_escalation:
-                    try:
-                        static_dt = datetime.fromisoformat(static_escalation[country]).date()
-                        static_days = (today - static_dt).days
-                        static_esc_date = static_escalation[country]
-                    except ValueError:
-                        pass
-                conflicts.append({
                     "country":               country,
                     "conflict_name":         country,
                     "days_since_escalation": min(static_days, effective_lookback),
