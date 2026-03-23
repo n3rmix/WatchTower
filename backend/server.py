@@ -1540,6 +1540,193 @@ async def get_humanitarian_clock(
     }
 
 
+
+# ─── Actor Relationship Network ────────────────────────────────────────────────
+
+_actor_network_cache: Optional[Dict] = None
+_actor_network_cache_ts: Optional[datetime] = None
+_ACTOR_CACHE_TTL = 3600  # 1 hour — same cadence as main data refresh
+
+
+def _classify_actor_type(name: str) -> str:
+    """Map a UCDP actor name to a display category via keyword heuristics."""
+    n = (name or "").lower()
+    if any(k in n for k in [
+        'government of', 'armed forces of', 'military of', 'national army',
+        'national defence', 'national defense', 'air force', 'naval force',
+        'security forces', 'border guard', 'police', 'gendarmerie',
+        'presidential guard', 'national guard', 'ministry of defence',
+        'ministry of defense', 'state forces',
+    ]):
+        return 'government'
+    if any(k in n for k in [
+        'al-qaeda', 'al qaeda', 'al-qai', 'islamic state', 'isis', 'isil',
+        'daesh', 'al-shabaab', 'boko haram', 'jabhat', 'hay\'at tahrir',
+        'hayat tahrir', 'jma\'a', 'jamaa', 'ansar al-', 'ahrar al-',
+        'hizb-i islami', 'lashkar',
+    ]):
+        return 'jihadist'
+    if any(k in n for k in [
+        'militia', 'janjaweed', 'pro-government', 'loyalist', 'paramilitary',
+        'wagner', 'auxiliary', 'interahamwe', 'self-defense force',
+        'civil defense', 'rapid support', 'shabiha',
+    ]):
+        return 'militia'
+    if any(k in n for k in [
+        'liberation', 'resistance', 'rebel', 'opposition', 'revolutionary',
+        'insurgent', 'freedom fighters', 'separatist', 'secessionist',
+        'partisan', ' front', 'national union', 'people\'s defense',
+        'democratic forces', 'movement (', ' army (', 'kna', 'knla',
+        'pjak', 'pkk', 'tnla', 'arakan army', 'kia (', 'pdf (',
+    ]):
+        return 'rebel'
+    if any(k in n for k in ['civilians', 'unknown', 'unidentified', 'communal', 'ethnic group']):
+        return 'civilian-targeting'
+    return 'other'
+
+
+async def _fetch_ucdp_all_pages(
+    session: aiohttp.ClientSession,
+    endpoint: str,
+    hdrs: Dict,
+    extra_params: Optional[Dict] = None,
+) -> List[Dict]:
+    """Paginate through a UCDP API endpoint and return every record."""
+    all_results: List[Dict] = []
+    pg = 1
+    while True:
+        params = {"pagesize": 1000, "page": pg, **(extra_params or {})}
+        try:
+            async with session.get(
+                f"{UCDP_API_BASE}/{endpoint}",
+                params=params,
+                headers=hdrs,
+                timeout=aiohttp.ClientTimeout(total=60),
+            ) as resp:
+                if resp.status != 200:
+                    logger.warning(f"UCDP {endpoint} HTTP {resp.status} page {pg}")
+                    break
+                data = await resp.json()
+                results = data.get("Result", [])
+                all_results.extend(results)
+                logger.debug(f"UCDP {endpoint} page {pg}: {len(results)} records")
+                if len(results) < 1000:
+                    break
+                pg += 1
+        except Exception as exc:
+            logger.warning(f"UCDP {endpoint} page {pg} error: {exc}")
+            break
+    return all_results
+
+
+@api_router.get("/actor-network")
+async def get_actor_network():
+    """Actor Relationship Network — directed dyadic conflict graph.
+
+    Returns every UCDP dyad-year record from the Dyadic and Non-State
+    datasets (full history).  The frontend handles year-range and minimum-
+    deaths filtering client-side for instant temporal scrubbing without
+    additional round-trips.
+
+    Each record:
+      side_a / side_b     — actor names
+      side_a_type / side_b_type — classified actor category
+      bd_best             — battle deaths best estimate for that year
+      year                — calendar year
+      conflict_name       — human-readable label
+      region              — UCDP region string
+      source              — 'dyadic' | 'nonstate'
+    """
+    global _actor_network_cache, _actor_network_cache_ts
+
+    now = datetime.now(timezone.utc)
+    if (
+        _actor_network_cache is not None
+        and _actor_network_cache_ts is not None
+        and (now - _actor_network_cache_ts).total_seconds() < _ACTOR_CACHE_TTL
+    ):
+        return _actor_network_cache
+
+    ucdp_api_key = get_ucdp_api_key()
+    hdrs: Dict[str, str] = {}
+    if ucdp_api_key:
+        hdrs["x-ucdp-access-token"] = ucdp_api_key
+
+    dyads: List[Dict] = []
+    data_sources: List[str] = []
+
+    async with aiohttp.ClientSession(headers={"User-Agent": "WatchTower/1.0"}) as session:
+
+        # ── 1. UCDP Dyadic dataset (state-based conflicts) ────────────────────
+        try:
+            raw_dy = await _fetch_ucdp_all_pages(session, f"ucdpdy/{UCDP_VERSION}", hdrs)
+            for r in raw_dy:
+                year = r.get("year")
+                if not year:
+                    continue
+                side_a = (r.get("side_a") or "").strip()
+                side_b = (r.get("side_b") or "").strip()
+                if not side_a or not side_b:
+                    continue
+                dyads.append({
+                    "side_a":        side_a,
+                    "side_b":        side_b,
+                    "side_a_type":   _classify_actor_type(side_a),
+                    "side_b_type":   _classify_actor_type(side_b),
+                    "bd_best":       int(r.get("bd_best") or 0),
+                    "year":          int(year),
+                    "conflict_name": (r.get("conflict_name") or r.get("dyad_name") or "").strip(),
+                    "region":        (r.get("region") or "").strip(),
+                    "source":        "dyadic",
+                })
+            data_sources.append(f"UCDP Dyadic {UCDP_VERSION}")
+            logger.info(f"Actor network: {len(raw_dy)} dyadic records fetched")
+        except Exception as exc:
+            logger.error(f"Actor network: dyadic fetch error: {exc}")
+
+        # ── 2. UCDP Non-State dataset ─────────────────────────────────────────
+        try:
+            raw_ns = await _fetch_ucdp_all_pages(session, f"nonstate/{UCDP_VERSION}", hdrs)
+            for r in raw_ns:
+                year = r.get("year")
+                if not year:
+                    continue
+                actor_a = (r.get("actor_a") or r.get("side_a") or "").strip()
+                actor_b = (r.get("actor_b") or r.get("side_b") or "").strip()
+                if not actor_a or not actor_b:
+                    continue
+                dyads.append({
+                    "side_a":        actor_a,
+                    "side_b":        actor_b,
+                    "side_a_type":   _classify_actor_type(actor_a),
+                    "side_b_type":   _classify_actor_type(actor_b),
+                    "bd_best":       int(r.get("bd_best") or 0),
+                    "year":          int(year),
+                    "conflict_name": (r.get("conflict_name") or r.get("dyad_name") or "").strip(),
+                    "region":        (r.get("region") or "").strip(),
+                    "source":        "nonstate",
+                })
+            data_sources.append(f"UCDP Non-State {UCDP_VERSION}")
+            logger.info(f"Actor network: {len(raw_ns)} non-state records fetched")
+        except Exception as exc:
+            logger.error(f"Actor network: non-state fetch error: {exc}")
+
+    years = sorted({d["year"] for d in dyads}) if dyads else []
+    result = {
+        "dyads":         dyads,
+        "years":         years,
+        "year_min":      min(years) if years else 1946,
+        "year_max":      max(years) if years else 2024,
+        "total_records": len(dyads),
+        "data_sources":  data_sources,
+        "generated_at":  now.isoformat(),
+    }
+
+    _actor_network_cache    = result
+    _actor_network_cache_ts = now
+    return result
+
+
 # ─── App setup ────────────────────────────────────────────────────────────────
 
 app.include_router(api_router)

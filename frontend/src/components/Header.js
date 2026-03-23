@@ -1,4 +1,4 @@
-import { Globe, RefreshCw, Database, AlertTriangle, Map } from "lucide-react";
+import { Globe, RefreshCw, Database, AlertTriangle, Map, Network } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import { Button } from "./ui/button";
 
@@ -76,6 +76,19 @@ const Header = ({ dataLastFetch, sourcesUsed = [], nextFetchIn, onRefresh }) => 
             >
               <Map className="w-3.5 h-3.5" />
               Human Cost
+            </NavLink>
+            <NavLink
+              to="/actor-network"
+              className={({ isActive }) =>
+                `flex items-center gap-1.5 px-3 py-1 rounded-sm text-xs font-mono uppercase tracking-wider transition-colors border ${
+                  isActive
+                    ? "bg-zinc-800 border-zinc-700 text-white"
+                    : "border-transparent text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900"
+                }`
+              }
+            >
+              <Network className="w-3.5 h-3.5" />
+              Actor Network
             </NavLink>
           </nav>
 
