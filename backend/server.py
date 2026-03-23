@@ -881,9 +881,21 @@ async def fetch_treemap_data() -> Dict:
                     region_code = 0
 
                 if cid not in conflict_agg:
+                    # UCDP battledeaths rows may not carry conflict_name; fall back
+                    # to the 'name' field, then construct "Side A – Side B".
+                    conf_name = (
+                        rec.get("conflict_name")
+                        or rec.get("name")
+                        or (
+                            f"{rec['side_a']} – {rec['side_b']}"
+                            if rec.get("side_a") and rec.get("side_b")
+                            else rec.get("side_a") or rec.get("side_b")
+                        )
+                        or f"Conflict {cid}"
+                    )
                     conflict_agg[cid] = {
                         "conflict_id": cid,
-                        "name": rec.get("conflict_name", "Unknown"),
+                        "name": conf_name,
                         "location": rec.get("location", ""),
                         "region_code": region_code,
                         "total_deaths": 0.0,
