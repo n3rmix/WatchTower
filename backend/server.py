@@ -1657,32 +1657,65 @@ async def get_actor_network():
 
     async with aiohttp.ClientSession(headers={"User-Agent": "WatchTower/1.0"}) as session:
 
-        # ── 1. UCDP Dyadic dataset (state-based conflicts) ────────────────────
+        # ── 1. State-based dyads via GED gedevents (ucdpdy is not a public endpoint)
+        # Fetch GED events per monitored country, then aggregate by (dyad_name, year).
+        # GED events carry side_a, side_b, dyad_name, best (deaths), date_start.
         try:
-            raw_dy = await _fetch_ucdp_all_pages(session, f"ucdpdy/{UCDP_VERSION}", hdrs)
-            for r in raw_dy:
-                year = r.get("year")
-                if not year:
+            # All countries in the clock map (includes Iran GW=630)
+            all_gw_codes = list({**UCDP_COUNTRY_MAP, 'Iran': '630'}.values())
+            ged_tasks = [
+                _fetch_ucdp_all_pages(
+                    session,
+                    f"gedevents/{UCDP_VERSION}",
+                    hdrs,
+                    {"Country": gw, "StartDate": "2000-01-01"},
+                )
+                for gw in all_gw_codes
+            ]
+            ged_results = await asyncio.gather(*ged_tasks, return_exceptions=True)
+
+            # Aggregate individual events → dyad-year buckets
+            dyad_year: Dict[tuple, Dict] = {}
+            for country_events in ged_results:
+                if isinstance(country_events, Exception):
                     continue
-                side_a = (r.get("side_a") or "").strip()
-                side_b = (r.get("side_b") or "").strip()
-                if not side_a or not side_b:
-                    continue
+                for ev in country_events:
+                    ds = (ev.get("date_start") or "")[:10]
+                    year = int(ds[:4]) if len(ds) >= 4 else None
+                    if not year:
+                        continue
+                    side_a = (ev.get("side_a") or "").strip()
+                    side_b = (ev.get("side_b") or "").strip()
+                    if not side_a or not side_b:
+                        continue
+                    dyad_name = ev.get("dyad_name") or f"{side_a} - {side_b}"
+                    key = (dyad_name, year)
+                    if key not in dyad_year:
+                        dyad_year[key] = {
+                            "side_a":        side_a,
+                            "side_b":        side_b,
+                            "bd_best":       0,
+                            "conflict_name": (ev.get("conflict_name") or "").strip(),
+                            "region":        (ev.get("region") or "").strip(),
+                        }
+                    dyad_year[key]["bd_best"] += int(ev.get("best") or 0)
+
+            for (_, year), rec in dyad_year.items():
                 dyads.append({
-                    "side_a":        side_a,
-                    "side_b":        side_b,
-                    "side_a_type":   _classify_actor_type(side_a),
-                    "side_b_type":   _classify_actor_type(side_b),
-                    "bd_best":       int(r.get("bd_best") or 0),
-                    "year":          int(year),
-                    "conflict_name": (r.get("conflict_name") or r.get("dyad_name") or "").strip(),
-                    "region":        (r.get("region") or "").strip(),
-                    "source":        "dyadic",
+                    "side_a":        rec["side_a"],
+                    "side_b":        rec["side_b"],
+                    "side_a_type":   _classify_actor_type(rec["side_a"]),
+                    "side_b_type":   _classify_actor_type(rec["side_b"]),
+                    "bd_best":       rec["bd_best"],
+                    "year":          year,
+                    "conflict_name": rec["conflict_name"],
+                    "region":        rec["region"],
+                    "source":        "gedevents",
                 })
-            data_sources.append(f"UCDP Dyadic {UCDP_VERSION}")
-            logger.info(f"Actor network: {len(raw_dy)} dyadic records fetched")
+            data_sources.append(f"UCDP GED {UCDP_VERSION}")
+            logger.info(f"Actor network: {len(dyad_year)} state-based dyad-year records from GED")
         except Exception as exc:
-            logger.error(f"Actor network: dyadic fetch error: {exc}")
+            logger.error(f"Actor network: GED dyadic fetch error: {exc}")
 
         # ── 2. UCDP Non-State dataset ─────────────────────────────────────────
         try:
