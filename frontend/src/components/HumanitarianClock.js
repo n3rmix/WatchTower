@@ -94,7 +94,12 @@ function Tooltip({ conflict, x, y, visible }) {
           {statusLabel} · {conflict.days_since_escalation}d ago
         </p>
         {conflict.last_escalation_date && (
-          <p className="text-zinc-500">Last: {conflict.last_escalation_date}</p>
+          <p className="text-zinc-500">
+            Last: {conflict.last_escalation_date}
+            {conflict.escalation_from_baseline && (
+              <span className="ml-1 text-amber-600" title="Date from static baseline — not yet in live dataset">†</span>
+            )}
+          </p>
         )}
         {conflict.recent_best_deaths > 0 && (
           <p className="text-zinc-500">

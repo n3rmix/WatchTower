@@ -549,7 +549,8 @@ BASELINE_CONFLICTS = [
         'countries_involved': ['Ukraine', 'Russia'],
         'parties_involved': ['Ukrainian Armed Forces', 'Russian Armed Forces', 'Wagner Group', 'Ukrainian Territorial Defense', 'Donetsk People\'s Republic', 'Luhansk People\'s Republic'],
         'data_sources': ['OHCHR', 'Ukraine MOD', 'Mediazona', 'BBC Russia'],
-        'status': 'active'
+        'status': 'active',
+        'escalation_date': '2022-02-24',   # Full-scale Russian invasion
     },
     {
         'country': 'Gaza/Palestine',
@@ -562,7 +563,8 @@ BASELINE_CONFLICTS = [
         'countries_involved': ['Palestine', 'Israel'],
         'parties_involved': ['Israeli Defense Forces (IDF)', 'Hamas', 'Palestinian Islamic Jihad', 'Al-Qassam Brigades', 'Israeli Security Forces'],
         'data_sources': ['Gaza Health Ministry', 'OCHA', 'B\'Tselem', 'PCHR'],
-        'status': 'active'
+        'status': 'active',
+        'escalation_date': '2023-10-07',   # Hamas attack / Israeli ground operation
     },
     {
         'country': 'Sudan',
@@ -575,7 +577,8 @@ BASELINE_CONFLICTS = [
         'countries_involved': ['Sudan'],
         'parties_involved': ['Sudanese Armed Forces (SAF)', 'Rapid Support Forces (RSF)', 'Sudan Liberation Movement', 'Justice and Equality Movement'],
         'data_sources': ['ACLED', 'Sudan Doctors Syndicate', 'WHO', 'OCHA Sudan'],
-        'status': 'active'
+        'status': 'active',
+        'escalation_date': '2023-04-15',   # SAF–RSF fighting erupted
     },
     {
         'country': 'Myanmar',
@@ -588,7 +591,8 @@ BASELINE_CONFLICTS = [
         'countries_involved': ['Myanmar'],
         'parties_involved': ['Myanmar Military (Tatmadaw)', 'People\'s Defense Forces (PDF)', 'Arakan Army', 'Karen National Union', 'Kachin Independence Army', 'National Unity Government'],
         'data_sources': ['AAPP', 'UCDP', 'UN Human Rights Office', 'Myanmar Witness'],
-        'status': 'active'
+        'status': 'active',
+        'escalation_date': '2023-10-27',   # Operation 1027 — AA/MNDAA/TNL offensive
     },
     {
         'country': 'Syria',
@@ -601,7 +605,8 @@ BASELINE_CONFLICTS = [
         'countries_involved': ['Syria', 'Turkey', 'Russia', 'Iran', 'United States'],
         'parties_involved': ['Syrian Government Forces', 'Syrian Democratic Forces (SDF)', 'Hayat Tahrir al-Sham (HTS)', 'Free Syrian Army', 'ISIS remnants', 'Turkish Armed Forces', 'Russian Forces', 'Iranian Forces', 'Hezbollah', 'US Coalition'],
         'data_sources': ['Syrian Observatory for Human Rights', 'VDC', 'SNHR', 'WHO Syria'],
-        'status': 'active'
+        'status': 'active',
+        'escalation_date': '2024-11-27',   # HTS/rebel offensive; Assad fell Dec 2024
     },
     {
         'country': 'Yemen',
@@ -614,7 +619,8 @@ BASELINE_CONFLICTS = [
         'countries_involved': ['Yemen', 'Saudi Arabia', 'UAE', 'Iran'],
         'parties_involved': ['Houthi Movement (Ansar Allah)', 'Yemeni Government Forces', 'Saudi-led Coalition', 'Southern Transitional Council', 'Al-Qaeda in Arabian Peninsula', 'UAE Forces', 'Yemeni Armed Forces'],
         'data_sources': ['ACLED', 'Yemen Data Project', 'OCHA Yemen', 'WHO Yemen'],
-        'status': 'active'
+        'status': 'active',
+        'escalation_date': '2024-01-11',   # US/UK airstrikes on Houthi targets began
     },
     {
         'country': 'Ethiopia',
@@ -627,7 +633,8 @@ BASELINE_CONFLICTS = [
         'countries_involved': ['Ethiopia', 'Eritrea'],
         'parties_involved': ['Ethiopian National Defense Force', 'Tigray Defense Forces', 'Eritrean Defense Forces', 'Amhara Regional Forces', 'Fano Militia', 'Oromo Liberation Army'],
         'data_sources': ['ACLED', 'Ghent University Study', 'TGHAT', 'Amnesty International'],
-        'status': 'active'
+        'status': 'active',
+        'escalation_date': '2024-02-01',   # Amhara/Fano offensive resumed
     },
     {
         'country': 'DRC (Congo)',
@@ -640,7 +647,8 @@ BASELINE_CONFLICTS = [
         'countries_involved': ['DRC', 'Rwanda', 'Uganda'],
         'parties_involved': ['FARDC (DRC Army)', 'M23 Movement', 'Allied Democratic Forces (ADF)', 'FDLR', 'Mai-Mai Militias', 'MONUSCO', 'Rwandan Defense Forces', 'Ugandan Forces'],
         'data_sources': ['ACLED', 'Kivu Security Tracker', 'OCHA DRC', 'Congo Research Group'],
-        'status': 'active'
+        'status': 'active',
+        'escalation_date': '2025-01-27',   # M23 captured Goma
     },
     {
         'country': 'Iran',
@@ -653,7 +661,8 @@ BASELINE_CONFLICTS = [
         'countries_involved': ['Iran', 'Israel', 'United States'],
         'parties_involved': ['IRGC', 'Iranian Armed Forces', 'Basij Militia', 'Israeli Air Force', 'US Forces', 'Kurdish Democratic Party of Iran (KDPI)', 'PJAK', 'Iranian Opposition Groups'],
         'data_sources': ['Hengaw', 'Iran Human Rights (IHR)', 'Amnesty International', 'UN Human Rights'],
-        'status': 'active'
+        'status': 'active',
+        'escalation_date': '2026-02-01',   # US-Israeli airstrikes began
     }
 ]
 
@@ -1395,19 +1404,43 @@ async def get_humanitarian_clock(
         dataset_end = today
         effective_lookback = lookback_days
 
+    # Build a lookup of known escalation dates from the static baseline so we
+    # can fall back to them when no API events qualify for a country.
+    static_escalation: Dict[str, str] = {
+        entry["country"]: entry["escalation_date"]
+        for entry in BASELINE_CONFLICTS
+        if entry.get("status") == "active" and entry.get("escalation_date")
+    }
+
     conflicts: List[Dict] = []
     for (country, _), events in zip(country_items, raw_results):
         if not events:
             conflicts.append({
-                "country":               country,
-                "conflict_name":         country,
-                "days_since_escalation": effective_lookback,
-                "last_escalation_date":  None,
-                "recent_best_deaths":    0,
-                "total_events":          0,
-                "total_best_deaths":     0,
-                "status":                "quiet",
-            })
+                # No API events at all — check static baseline before giving up
+                static_esc_date = None
+                static_days = effective_lookback
+                if country in static_escalation:
+                    try:
+                        static_dt = datetime.fromisoformat(static_escalation[country]).date()
+                        static_days = (today - static_dt).days
+                        static_esc_date = static_escalation[country]
+                    except ValueError:
+                        pass
+                conflicts.append({
+                    "country":               country,
+                    "conflict_name":         country,
+                    "days_since_escalation": min(static_days, effective_lookback),
+                    "last_escalation_date":  static_esc_date,
+                    "recent_best_deaths":    0,
+                    "total_events":          0,
+                    "total_best_deaths":     0,
+                    "status":                (
+                        "escalating" if static_days <= 7 else
+                        "watch"      if static_days <= 21 else
+                        "cooling"
+                    ),
+                    "escalation_from_baseline": static_esc_date is not None,
+                })
             continue
 
         # Build a daily death-count map  (date_str → total best)
@@ -1451,7 +1484,24 @@ async def get_humanitarian_clock(
 
         days_since = min(days_since, effective_lookback)
 
-        conflict_name = (events[0].get("conflict_name") or country)
+        # ── Static-baseline fallback ──────────────────────────────────────────
+        # If no API event qualified (days_since == effective_lookback), check
+        # whether the static baseline records a known escalation date that is
+        # more recent.  This covers conflicts like Iran whose major 2026
+        # escalation post-dates all current UCDP dataset releases.
+        escalation_from_baseline = False
+        if days_since >= effective_lookback and country in static_escalation:
+            try:
+                static_dt = datetime.fromisoformat(static_escalation[country]).date()
+                static_days = (today - static_dt).days
+                if static_days < days_since:
+                    last_escalation_date = static_escalation[country]
+                    days_since = static_days
+                    escalation_from_baseline = True
+            except ValueError:
+                pass
+
+        conflict_name = (events[0].get("conflict_name") if events else None) or country
         total_best    = sum(int(ev.get("best") or 0) for ev in events)
         status = (
             "escalating" if days_since <= 7 else
@@ -1468,6 +1518,7 @@ async def get_humanitarian_clock(
             "total_events":          len(events),
             "total_best_deaths":     total_best,
             "status":                status,
+            "escalation_from_baseline": escalation_from_baseline,
         })
 
     conflicts.sort(key=lambda c: c["days_since_escalation"])
