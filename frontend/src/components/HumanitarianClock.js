@@ -305,7 +305,15 @@ export default function HumanitarianClock() {
   useEffect(() => {
     axios
       .get(`${API}/humanitarian-clock`)
-      .then((r) => { setData(r.data); setLoading(false); })
+      .then((r) => {
+        const d = r.data;
+        if (d.source_available === false) {
+          setError("no-source");
+        } else {
+          setData(d);
+        }
+        setLoading(false);
+      })
       .catch(() => { setError(true); setLoading(false); });
   }, []);
 
@@ -364,9 +372,21 @@ export default function HumanitarianClock() {
           </div>
         )}
 
-        {error && !loading && (
+        {error === "no-source" && !loading && (
+          <div className="text-center px-4 space-y-1">
+            <p className="text-[10px] font-mono text-zinc-600">
+              No live data source available.
+            </p>
+            <p className="text-[9px] font-mono text-zinc-700">
+              Configure <span className="text-zinc-500">ACLED_EMAIL + ACLED_KEY</span> or{" "}
+              <span className="text-zinc-500">UCDP_API_KEY</span> to enable this widget.
+            </p>
+          </div>
+        )}
+
+        {error && error !== "no-source" && !loading && (
           <p className="text-[10px] font-mono text-zinc-700 text-center px-4">
-            Could not reach UCDP GED Candidate endpoint.
+            Could not reach event data source.
           </p>
         )}
 
@@ -394,8 +414,8 @@ export default function HumanitarianClock() {
               <span className="text-zinc-700"> cooling</span>
             </span>
           </div>
-          <span className="text-[9px] font-mono text-zinc-800">
-            UCDP GED Candidate
+          <span className="text-[9px] font-mono text-zinc-700">
+            {data.data_source || "UCDP GED Candidate"}
           </span>
         </div>
       )}

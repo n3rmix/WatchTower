@@ -1162,6 +1162,56 @@ CLOCK_COUNTRY_MAP: Dict[str, str] = {
     'Iran': '630',
 }
 
+async def _fetch_acled_clock_events(
+    session: aiohttp.ClientSession,
+    email: str,
+    api_key: str,
+    country_name: str,
+    start_date: str,
+    end_date: str,
+) -> List[Dict]:
+    """Fetch ACLED events with fatalities for a country in a date range.
+
+    Returns events as {"date_start": "YYYY-MM-DD", "best": N, "conflict_name": str}
+    so the rest of the clock logic (daily map → 7-day window) is reusable.
+    """
+    try:
+        async with session.get(
+            "https://api.acleddata.com/acled/read",
+            params={
+                "key":               api_key,
+                "email":             email,
+                "country":           country_name,
+                "event_date":        f"{start_date}|{end_date}",
+                "event_date_where":  "BETWEEN",
+                "fields":            "event_date|fatalities|country",
+                "limit":             0,
+            },
+            timeout=aiohttp.ClientTimeout(total=60),
+        ) as resp:
+            if resp.status != 200:
+                logger.warning(f"ACLED clock HTTP {resp.status} for {country_name}")
+                return []
+            data = await resp.json()
+            events = []
+            for e in data.get("data", []):
+                fat = int(e.get("fatalities", 0) or 0)
+                if fat > 0:
+                    events.append({
+                        "date_start":    (e.get("event_date") or "")[:10],
+                        "best":          fat,
+                        "conflict_name": e.get("country", country_name),
+                    })
+            logger.info(
+                f"ACLED clock: {country_name} → {len(events)} events "
+                f"with fatalities in [{start_date}, {end_date}]"
+            )
+            return events
+    except Exception as exc:
+        logger.warning(f"ACLED clock error for {country_name}: {exc}")
+        return []
+
+
 async def _fetch_clock_events(
     session: aiohttp.ClientSession,
     hdrs: Dict[str, str],
@@ -1212,54 +1262,98 @@ async def get_humanitarian_clock(
 ):
     """Humanitarian Clock — Time-Since-Escalation.
 
-    For each monitored conflict, fetches GED Candidate events over the past
+    For each monitored conflict, fetches recent events over the past
     `lookback_days` and slides a 7-day window backward from today to find the
-    most recent period where battle deaths exceeded `threshold`.
+    most recent period where battle/civilian deaths exceeded `threshold`.
+
+    Source priority:
+      1. ACLED (near-real-time, daily updates) — used when ACLED_EMAIL + ACLED_KEY are set
+      2. UCDP GED Candidate (monthly release)   — used when ACLED is unavailable
 
     Returns conflicts sorted by days_since_escalation ascending so the most
     urgent appear first. Conflicts near zero are actively escalating; those
-    approaching lookback_days are cooling.
+    approaching lookback_days are cooling.  When neither source can be reached
+    the response includes source_available=false so the UI can show a clear
+    error rather than a misleading all-cooling chart.
 
-    threshold    – min battle deaths in a 7-day window to qualify as significant
+    threshold    – min deaths in a 7-day window to qualify as significant
     lookback_days – how far back to search (default 90)
     """
-    api_key = get_ucdp_api_key()
-    ucdp_hdrs: Dict[str, str] = {}
-    if api_key:
-        ucdp_hdrs["x-ucdp-access-token"] = api_key
-
     today      = datetime.now(timezone.utc).date()
     start_date = (today - timedelta(days=lookback_days)).isoformat()
     end_date   = today.isoformat()
 
-    # Resolve the best available GED Candidate version.
-    # If an env override is set, use it directly; otherwise probe newest→oldest.
-    async with aiohttp.ClientSession(headers={"User-Agent": "WatchTower/1.0"}) as session:
-        if _UCDP_CANDIDATE_VERSION_OVERRIDE:
-            active_version = _UCDP_CANDIDATE_VERSION_OVERRIDE
-        else:
-            active_version = _candidate_versions_to_try()[-1]  # fallback = oldest
-            for v in _candidate_versions_to_try():
-                probe_url = f"{UCDP_API_BASE}/gedevents/{v}"
-                try:
-                    async with session.get(
-                        probe_url,
-                        params={"Country": "369", "pagesize": 1, "page": 1},
-                        headers=ucdp_hdrs,
-                        timeout=aiohttp.ClientTimeout(total=10),
-                    ) as probe_resp:
-                        if probe_resp.status == 200:
-                            active_version = v
-                            break
-                except Exception:
-                    pass
-        logger.info(f"Humanitarian clock using GED Candidate version: {active_version}")
+    acled_email, acled_key = get_acled_credentials()
+    ucdp_api_key = get_ucdp_api_key()
+    ucdp_hdrs: Dict[str, str] = {}
+    if ucdp_api_key:
+        ucdp_hdrs["x-ucdp-access-token"] = ucdp_api_key
 
-        country_items  = list(CLOCK_COUNTRY_MAP.items())
-        raw_results    = await asyncio.gather(*[
-            _fetch_clock_events(session, ucdp_hdrs, gw_code, start_date, end_date, version=active_version)
-            for _, gw_code in country_items
-        ])
+    country_items = list(ACLED_COUNTRY_MAP.items())  # country label → ACLED name
+    # UCDP GW codes for Candidate fallback (include Iran)
+    clock_ucdp_map = {**UCDP_COUNTRY_MAP, 'Iran': '630'}
+
+    data_source = "unavailable"
+
+    async with aiohttp.ClientSession(headers={"User-Agent": "WatchTower/1.0"}) as session:
+
+        # ── 1. Try ACLED first (near-real-time, daily data) ───────────────────
+        if acled_email and acled_key:
+            raw_results = await asyncio.gather(*[
+                _fetch_acled_clock_events(
+                    session, acled_email, acled_key,
+                    acled_name, start_date, end_date,
+                )
+                for _, acled_name in country_items
+            ])
+            # Accept ACLED if at least one country returned events
+            if any(raw_results):
+                data_source = "ACLED"
+                logger.info("Humanitarian clock: using ACLED as data source")
+            else:
+                logger.warning("Humanitarian clock: ACLED returned no events, trying UCDP Candidate")
+                raw_results = None
+        else:
+            raw_results = None
+
+        # ── 2. Fall back to UCDP GED Candidate ───────────────────────────────
+        if raw_results is None:
+            # Resolve best available GED Candidate version
+            if _UCDP_CANDIDATE_VERSION_OVERRIDE:
+                active_version = _UCDP_CANDIDATE_VERSION_OVERRIDE
+            else:
+                active_version = _candidate_versions_to_try()[-1]
+                for v in _candidate_versions_to_try():
+                    try:
+                        async with session.get(
+                            f"{UCDP_API_BASE}/gedevents/{v}",
+                            params={"Country": "369", "pagesize": 1, "page": 1},
+                            headers=ucdp_hdrs,
+                            timeout=aiohttp.ClientTimeout(total=10),
+                        ) as probe_resp:
+                            if probe_resp.status == 200:
+                                body = await probe_resp.json()
+                                if body.get("Result") is not None:
+                                    active_version = v
+                                    break
+                    except Exception:
+                        pass
+
+            logger.info(f"Humanitarian clock: trying UCDP Candidate version {active_version}")
+            # Use UCDP country map order for Candidate (GW codes)
+            ucdp_country_items = [(k, clock_ucdp_map[k]) for k in ACLED_COUNTRY_MAP if k in clock_ucdp_map]
+            ucdp_raw = await asyncio.gather(*[
+                _fetch_clock_events(session, ucdp_hdrs, gw_code, start_date, end_date, version=active_version)
+                for _, gw_code in ucdp_country_items
+            ])
+            if any(ucdp_raw):
+                data_source = f"UCDP GED Candidate {active_version}"
+                country_items = ucdp_country_items
+                raw_results = ucdp_raw
+                logger.info(f"Humanitarian clock: using UCDP Candidate {active_version}")
+            else:
+                logger.warning("Humanitarian clock: UCDP Candidate also returned no events")
+                raw_results = [[] for _ in country_items]
 
     conflicts: List[Dict] = []
     for (country, _), events in zip(country_items, raw_results):
@@ -1336,16 +1430,20 @@ async def get_humanitarian_clock(
         })
 
     conflicts.sort(key=lambda c: c["days_since_escalation"])
+    source_available = data_source != "unavailable"
     logger.info(
         f"Humanitarian clock: {len(conflicts)} conflicts, "
-        f"threshold={threshold}, lookback={lookback_days}d"
+        f"threshold={threshold}, lookback={lookback_days}d, "
+        f"source={data_source}"
     )
 
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "lookback_days": lookback_days,
-        "threshold":     threshold,
-        "conflicts":     conflicts,
+        "generated_at":    datetime.now(timezone.utc).isoformat(),
+        "lookback_days":   lookback_days,
+        "threshold":       threshold,
+        "data_source":     data_source,
+        "source_available": source_available,
+        "conflicts":       conflicts if source_available else [],
     }
 
 
