@@ -1316,9 +1316,8 @@ async def get_humanitarian_clock(
         else:
             raw_results = None
 
-        # ── 2. Fall back to UCDP GED Candidate ───────────────────────────────
+        # ── 2. UCDP GED Candidate (monthly release) ──────────────────────────
         if raw_results is None:
-            # Resolve best available GED Candidate version
             if _UCDP_CANDIDATE_VERSION_OVERRIDE:
                 active_version = _UCDP_CANDIDATE_VERSION_OVERRIDE
             else:
@@ -1340,7 +1339,6 @@ async def get_humanitarian_clock(
                         pass
 
             logger.info(f"Humanitarian clock: trying UCDP Candidate version {active_version}")
-            # Use UCDP country map order for Candidate (GW codes)
             ucdp_country_items = [(k, clock_ucdp_map[k]) for k in ACLED_COUNTRY_MAP if k in clock_ucdp_map]
             ucdp_raw = await asyncio.gather(*[
                 _fetch_clock_events(session, ucdp_hdrs, gw_code, start_date, end_date, version=active_version)
@@ -1352,8 +1350,50 @@ async def get_humanitarian_clock(
                 raw_results = ucdp_raw
                 logger.info(f"Humanitarian clock: using UCDP Candidate {active_version}")
             else:
-                logger.warning("Humanitarian clock: UCDP Candidate also returned no events")
+                logger.warning("Humanitarian clock: UCDP Candidate returned no events, trying stable GED")
+                raw_results = None
+
+        # ── 3. Fall back to stable UCDP GED v25.1 (relative mode) ────────────
+        # The stable dataset ends ~Dec 2024; "days_since" is computed relative
+        # to the dataset's own last event date, not today, so ongoing conflicts
+        # still show meaningful escalation recency.
+        if raw_results is None:
+            stable_start = (today - timedelta(days=730)).isoformat()   # 2 years back
+            ucdp_country_items = [(k, clock_ucdp_map[k]) for k in ACLED_COUNTRY_MAP if k in clock_ucdp_map]
+            ucdp_raw = await asyncio.gather(*[
+                _fetch_clock_events(
+                    session, ucdp_hdrs, gw_code,
+                    stable_start, end_date,
+                    version=UCDP_VERSION,
+                )
+                for _, gw_code in ucdp_country_items
+            ])
+            if any(ucdp_raw):
+                data_source = f"UCDP GED {UCDP_VERSION} (relative)"
+                country_items = ucdp_country_items
+                raw_results = ucdp_raw
+                logger.info(f"Humanitarian clock: using stable UCDP GED {UCDP_VERSION} in relative mode")
+            else:
+                logger.warning("Humanitarian clock: stable GED also returned no events")
                 raw_results = [[] for _ in country_items]
+
+    # In relative mode (stable GED fallback), compute days_since relative to
+    # the dataset's own last event date so ongoing conflicts aren't all "cooling".
+    relative_mode = data_source.endswith("(relative)")
+    if relative_mode:
+        all_dates = [
+            (ev.get("date_start") or "")[:10]
+            for evs in raw_results for ev in evs
+            if (ev.get("date_start") or "")[:10]
+        ]
+        try:
+            dataset_end = max(datetime.fromisoformat(d).date() for d in all_dates if d)
+        except (ValueError, TypeError):
+            dataset_end = today
+        effective_lookback = (today - dataset_end).days + lookback_days
+    else:
+        dataset_end = today
+        effective_lookback = lookback_days
 
     conflicts: List[Dict] = []
     for (country, _), events in zip(country_items, raw_results):
@@ -1361,7 +1401,7 @@ async def get_humanitarian_clock(
             conflicts.append({
                 "country":               country,
                 "conflict_name":         country,
-                "days_since_escalation": lookback_days,
+                "days_since_escalation": effective_lookback,
                 "last_escalation_date":  None,
                 "recent_best_deaths":    0,
                 "total_events":          0,
@@ -1402,13 +1442,14 @@ async def get_humanitarian_clock(
 
         if last_escalation_date:
             try:
-                days_since = (today - datetime.fromisoformat(last_escalation_date).date()).days
+                ref_date = dataset_end  # relative to dataset end, not today
+                days_since = (ref_date - datetime.fromisoformat(last_escalation_date).date()).days
             except ValueError:
-                days_since = lookback_days
+                days_since = effective_lookback
         else:
-            days_since = lookback_days
+            days_since = effective_lookback
 
-        days_since = min(days_since, lookback_days)
+        days_since = min(days_since, effective_lookback)
 
         conflict_name = (events[0].get("conflict_name") or country)
         total_best    = sum(int(ev.get("best") or 0) for ev in events)
@@ -1439,10 +1480,12 @@ async def get_humanitarian_clock(
 
     return {
         "generated_at":    datetime.now(timezone.utc).isoformat(),
-        "lookback_days":   lookback_days,
+        "lookback_days":   effective_lookback,
         "threshold":       threshold,
         "data_source":     data_source,
         "source_available": source_available,
+        "relative_mode":   relative_mode,
+        "dataset_end_date": dataset_end.isoformat() if relative_mode else None,
         "conflicts":       conflicts if source_available else [],
     }
 

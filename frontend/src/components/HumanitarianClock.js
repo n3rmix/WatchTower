@@ -336,9 +336,16 @@ export default function HumanitarianClock() {
           </p>
         </div>
         {data && (
-          <div className="flex items-center gap-1 text-[9px] font-mono text-zinc-700">
-            <span className="w-1.5 h-1.5 rounded-full bg-red-500 inline-block blink-animation" />
-            {data.threshold}+ deaths / 7d
+          <div className="flex flex-col items-end gap-0.5">
+            <div className="flex items-center gap-1 text-[9px] font-mono text-zinc-700">
+              <span className="w-1.5 h-1.5 rounded-full bg-red-500 inline-block blink-animation" />
+              {data.threshold}+ deaths / 7d
+            </div>
+            {data.relative_mode && data.dataset_end_date && (
+              <span className="text-[8px] font-mono text-amber-700 uppercase tracking-wider">
+                data as of {data.dataset_end_date}
+              </span>
+            )}
           </div>
         )}
       </div>
