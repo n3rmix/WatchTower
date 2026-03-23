@@ -1,5 +1,4 @@
 import { Globe, RefreshCw, Database, AlertTriangle } from "lucide-react";
-import { NavLink } from "react-router-dom";
 import { Button } from "./ui/button";
 
 /** Format an ISO string or Date as "DD MMM YYYY HH:MM UTC" */
@@ -33,27 +32,6 @@ const Header = ({ dataLastFetch, sourcesUsed = [], nextFetchIn, onRefresh }) => 
                 Project WATCHTOWER
               </h1>
               <p className="text-xs text-zinc-500 font-mono uppercase tracking-wider">Global Conflict Monitoring</p>
-              <nav className="flex items-center gap-1 mt-1.5">
-                {[
-                  { to: "/",                label: "Dashboard",       end: true  },
-                  { to: "/surge-detector",  label: "Surge Detector",  end: false },
-                ].map(({ to, label, end }) => (
-                  <NavLink
-                    key={to}
-                    to={to}
-                    end={end}
-                    className={({ isActive }) =>
-                      `text-[9px] font-mono uppercase tracking-wider px-2 py-0.5 rounded-sm border transition-colors ${
-                        isActive
-                          ? "border-red-700/60 bg-red-950/40 text-red-400"
-                          : "border-zinc-800 text-zinc-600 hover:text-zinc-400 hover:border-zinc-700"
-                      }`
-                    }
-                  >
-                    {label}
-                  </NavLink>
-                ))}
-              </nav>
               <p className="text-xs text-zinc-600 font-mono mt-0.5">
                 Data courtesy of{" "}
                 <a
