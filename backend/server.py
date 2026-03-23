@@ -85,6 +85,18 @@ ACLED_COUNTRY_MAP = {
     'Iran': 'Iran',
 }
 
+# UCDP geographic region code → human-readable name
+UCDP_REGION_MAP: Dict[int, str] = {
+    1: "Europe",
+    2: "Middle East",
+    3: "Asia",
+    4: "Africa",
+    5: "Americas",
+}
+
+# In-memory cache for treemap data (refreshed hourly alongside other data)
+_treemap_cache: Optional[Dict] = None
+
 # Models
 class ConflictData(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -803,14 +815,151 @@ async def scrape_conflict_data():
     return conflicts
 
 
+# ─── Treemap / Human Cost data ────────────────────────────────────────────────
+
+async def fetch_treemap_data() -> Dict:
+    """
+    Fetch the full UCDP battledeaths dataset and aggregate per conflict for the
+    Human Cost treemap.
+
+    Aggregates dyad-year rows into conflict-level totals:
+      - total_deaths  : sum of bd_best across all years and dyads
+      - last_year     : most recent year with recorded deaths (drives tile colour)
+      - region        : UCDP geographic region code → name
+
+    Result is cached in _treemap_cache and refreshed hourly.
+    """
+    global _treemap_cache
+
+    api_key = get_ucdp_api_key()
+    headers = {"x-ucdp-access-token": api_key} if api_key else {}
+    url = f"{UCDP_API_BASE}/battledeaths/{UCDP_VERSION}"
+
+    # conflict_id → aggregated record
+    conflict_agg: Dict[int, Dict] = {}
+
+    page = 1
+    total_pages = 1
+    timeout = aiohttp.ClientTimeout(total=180)
+
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        while page <= total_pages:
+            params: Dict = {"pagesize": 1000, "page": page}
+            try:
+                async with session.get(url, params=params, headers=headers) as resp:
+                    if resp.status != 200:
+                        body = await resp.text()
+                        logger.error(
+                            f"UCDP battledeaths API error page {page}: "
+                            f"HTTP {resp.status} — {body[:200]}"
+                        )
+                        break
+                    payload = await resp.json()
+            except Exception as exc:
+                logger.error(f"Error fetching UCDP battledeaths page {page}: {exc}")
+                break
+
+            total_pages = payload.get("totalpages", 1)
+            records = payload.get("Result", [])
+            logger.info(
+                f"Treemap fetch: page {page}/{total_pages}, "
+                f"{len(records)} records"
+            )
+
+            for rec in records:
+                cid = rec.get("conflict_id")
+                if cid is None:
+                    continue
+
+                bd = float(rec.get("bd_best") or 0)
+                year = int(rec.get("year") or 0)
+                region_raw = rec.get("region")
+                # region can be int or string depending on API version
+                try:
+                    region_code = int(region_raw) if region_raw is not None else 0
+                except (ValueError, TypeError):
+                    region_code = 0
+
+                if cid not in conflict_agg:
+                    conflict_agg[cid] = {
+                        "conflict_id": cid,
+                        "name": rec.get("conflict_name", "Unknown"),
+                        "location": rec.get("location", ""),
+                        "region_code": region_code,
+                        "total_deaths": 0.0,
+                        "last_year": 0,
+                    }
+
+                conflict_agg[cid]["total_deaths"] += bd
+                if year > conflict_agg[cid]["last_year"]:
+                    conflict_agg[cid]["last_year"] = year
+
+            page += 1
+
+    # Discard conflicts with no recorded deaths
+    conflicts = [c for c in conflict_agg.values() if c["total_deaths"] > 0]
+
+    # Finalise types
+    for c in conflicts:
+        c["total_deaths"] = int(round(c["total_deaths"]))
+        region_name = UCDP_REGION_MAP.get(c["region_code"], f"Other")
+        c["region"] = region_name
+        del c["region_code"]
+
+    # Group into regions
+    region_map: Dict[str, Dict] = {}
+    for c in conflicts:
+        rname = c["region"]
+        if rname not in region_map:
+            region_map[rname] = {
+                "name": rname,
+                "total_deaths": 0,
+                "last_year": 0,
+                "conflicts": [],
+            }
+        region_map[rname]["total_deaths"] += c["total_deaths"]
+        if c["last_year"] > region_map[rname]["last_year"]:
+            region_map[rname]["last_year"] = c["last_year"]
+        region_map[rname]["conflicts"].append(c)
+
+    # Sort conflicts within each region by deaths descending
+    for r in region_map.values():
+        r["conflicts"].sort(key=lambda x: x["total_deaths"], reverse=True)
+
+    # Sort regions by deaths descending
+    sorted_regions = sorted(
+        region_map.values(), key=lambda x: x["total_deaths"], reverse=True
+    )
+
+    result = {
+        "regions": sorted_regions,
+        "total_conflicts": len(conflicts),
+        "total_deaths": sum(c["total_deaths"] for c in conflicts),
+        "year_range": [
+            min((c["last_year"] for c in conflicts), default=1946),
+            max((c["last_year"] for c in conflicts), default=2024),
+        ],
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    _treemap_cache = result
+    logger.info(
+        f"Treemap cache updated: {len(conflicts)} conflicts across "
+        f"{len(sorted_regions)} regions, "
+        f"total deaths = {result['total_deaths']:,}"
+    )
+    return result
+
+
 # ─── Background refresh task ──────────────────────────────────────────────────
 
 async def refresh_all_data():
-    """Refresh both news articles and conflict casualty data from primary sources."""
+    """Refresh news, conflict casualty data, and treemap from primary sources."""
     logger.info("Starting hourly data refresh…")
     try:
         await fetch_rss_feeds()
         await scrape_conflict_data()
+        await fetch_treemap_data()
         logger.info("Hourly data refresh completed successfully")
     except Exception as e:
         logger.error(f"Error during data refresh: {e}")
@@ -910,6 +1059,44 @@ async def get_chart_conflicts():
             conflict['last_updated'] = datetime.fromisoformat(conflict['last_updated'])
     return conflicts
 
+
+
+@api_router.get("/treemap")
+async def get_treemap():
+    """
+    Return UCDP battledeaths aggregated by conflict for the Human Cost treemap.
+
+    Response shape:
+    {
+        "regions": [
+            {
+                "name": "Africa",
+                "total_deaths": 1500000,
+                "last_year": 2023,
+                "conflicts": [
+                    {"conflict_id": 123, "name": "...", "total_deaths": 500000,
+                     "last_year": 2022, "location": "Ethiopia", "region": "Africa"},
+                    ...
+                ]
+            },
+            ...
+        ],
+        "total_conflicts": 245,
+        "total_deaths": 8500000,
+        "year_range": [1946, 2023],
+        "fetched_at": "..."
+    }
+    """
+    global _treemap_cache
+    if _treemap_cache is not None:
+        return _treemap_cache
+
+    # Cache miss — fetch synchronously on first request
+    try:
+        return await fetch_treemap_data()
+    except Exception as exc:
+        logger.error(f"Treemap fetch failed: {exc}")
+        raise HTTPException(status_code=503, detail="Unable to fetch treemap data from UCDP")
 
 
 @api_router.get("/chart-stats")
