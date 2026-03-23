@@ -129,19 +129,19 @@ function RadialChart({ conflicts, lookbackDays }) {
       <defs>
         {/* Radial gradient: red core → transparent */}
         <radialGradient id="hcEscZone" cx="50%" cy="50%" r="50%">
-          <stop offset="0%"   stopColor="#ef4444" stopOpacity="0.10" />
+          <stop offset="0%"   stopColor="#ef4444" stopOpacity="0.12" />
           <stop offset="100%" stopColor="#ef4444" stopOpacity="0.00" />
         </radialGradient>
         {/* Glow filter for escalating dots */}
-        <filter id="hcGlow" x="-100%" y="-100%" width="300%" height="300%">
-          <feGaussianBlur stdDeviation="4.5" result="blur" />
+        <filter id="hcGlow" x="-120%" y="-120%" width="340%" height="340%">
+          <feGaussianBlur stdDeviation="5" result="blur" />
           <feMerge>
             <feMergeNode in="blur" />
             <feMergeNode in="SourceGraphic" />
           </feMerge>
         </filter>
         <filter id="hcGlowAmber" x="-100%" y="-100%" width="300%" height="300%">
-          <feGaussianBlur stdDeviation="3" result="blur" />
+          <feGaussianBlur stdDeviation="3.5" result="blur" />
           <feMerge>
             <feMergeNode in="blur" />
             <feMergeNode in="SourceGraphic" />
@@ -191,34 +191,58 @@ function RadialChart({ conflicts, lookbackDays }) {
               strokeWidth={isHovered ? 1.5 : 1}
             />
 
-            {/* Escalating: fill arc from center to dot */}
+            {/* Escalating: bright fill-line from center to dot */}
             {isEsc && (
               <line
                 x1={CX} y1={CY}
                 x2={dot.x} y2={dot.y}
-                stroke="#ef444440"
-                strokeWidth="2"
+                stroke="#ef444460"
+                strokeWidth="3"
               />
             )}
 
-            {/* Dot glow halo */}
+            {/* Dot glow halo (static soft fill) */}
             {(isEsc || isWatch) && (
               <circle
                 cx={dot.x} cy={dot.y}
-                r={isEsc ? 14 : 11}
+                r={isEsc ? 20 : 15}
                 fill={dotGlow(c.days_since_escalation)}
               />
+            )}
+
+            {/* Sonar-ping ring 1 — escalating (fast, urgent) */}
+            {isEsc && (
+              <circle cx={dot.x} cy={dot.y} r="13" fill="none" stroke="#ef4444" strokeWidth="1.5">
+                <animate attributeName="r"              from="13" to="28" dur="1.6s" repeatCount="indefinite" />
+                <animate attributeName="stroke-opacity" from="0.7" to="0"  dur="1.6s" repeatCount="indefinite" />
+              </circle>
+            )}
+
+            {/* Sonar-ping ring 2 — escalating (delayed second echo) */}
+            {isEsc && (
+              <circle cx={dot.x} cy={dot.y} r="13" fill="none" stroke="#ef4444" strokeWidth="1">
+                <animate attributeName="r"              from="13" to="28" dur="1.6s" begin="0.8s" repeatCount="indefinite" />
+                <animate attributeName="stroke-opacity" from="0.4" to="0"  dur="1.6s" begin="0.8s" repeatCount="indefinite" />
+              </circle>
+            )}
+
+            {/* Sonar-ping ring — watch (slow, softer) */}
+            {isWatch && (
+              <circle cx={dot.x} cy={dot.y} r="10" fill="none" stroke="#f59e0b" strokeWidth="1">
+                <animate attributeName="r"              from="10" to="22" dur="2.8s" repeatCount="indefinite" />
+                <animate attributeName="stroke-opacity" from="0.5" to="0"  dur="2.8s" repeatCount="indefinite" />
+              </circle>
             )}
 
             {/* Main dot */}
             <circle
               cx={dot.x} cy={dot.y}
-              r={isEsc ? 8 : isWatch ? 7 : 6}
+              r={isEsc ? 13 : isWatch ? 10 : 6}
               fill={color}
-              fillOpacity={isEsc ? 1 : isWatch ? 0.90 : 0.80}
+              fillOpacity={isEsc ? 1 : isWatch ? 0.92 : 0.80}
               stroke={isEsc ? "#fca5a5" : isWatch ? "#fcd34d" : "#a1a1aa"}
-              strokeWidth={isEsc ? 1.5 : 1}
-              strokeOpacity={isEsc ? 0.70 : isWatch ? 0.50 : 0.30}
+              strokeWidth={isEsc ? 2 : isWatch ? 1.5 : 1}
+              strokeOpacity={isEsc ? 0.85 : isWatch ? 0.60 : 0.30}
               filter={isEsc ? "url(#hcGlow)" : isWatch ? "url(#hcGlowAmber)" : undefined}
               style={{ cursor: "pointer" }}
               onMouseEnter={() => setHovered({ conflict: c, x: dot.x, y: dot.y })}
@@ -227,7 +251,7 @@ function RadialChart({ conflicts, lookbackDays }) {
 
             {/* Invisible larger hit area */}
             <circle
-              cx={dot.x} cy={dot.y} r={14}
+              cx={dot.x} cy={dot.y} r={16}
               fill="transparent"
               style={{ cursor: "pointer" }}
               onMouseEnter={() => setHovered({ conflict: c, x: dot.x, y: dot.y })}
