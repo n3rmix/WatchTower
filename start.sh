@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# start.sh — Start WatchTower backend and frontend as background daemons.
-# Survives SSH session termination. Safe to run again (skips already-running processes).
+# start.sh — Start WatchTower backend as a background daemon.
+# Frontend is served by nginx. Survives SSH session termination.
+# Safe to run again (skips if already running).
 
 set -e
 
@@ -10,8 +11,6 @@ PIDS_DIR="$SCRIPT_DIR/.pids"
 
 mkdir -p "$LOGS_DIR" "$PIDS_DIR"
 
-# ── helpers ────────────────────────────────────────────────────────────────────
-
 is_running() {
   local pidfile="$PIDS_DIR/$1.pid"
   [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null
@@ -20,7 +19,7 @@ is_running() {
 # ── Backend ────────────────────────────────────────────────────────────────────
 
 if is_running backend; then
-  echo "backend:  already running (PID $(cat "$PIDS_DIR/backend.pid"))"
+  echo "backend: already running (PID $(cat "$PIDS_DIR/backend.pid"))"
 else
   if [ ! -d "$SCRIPT_DIR/backend/venv" ]; then
     echo "ERROR: backend/venv not found."
@@ -32,43 +31,21 @@ else
     cd "$SCRIPT_DIR/backend"
     source venv/bin/activate
     nohup python -m uvicorn server:app \
-      --host 0.0.0.0 --port 8001 \
+      --host 127.0.0.1 --port 8001 \
       >> "$LOGS_DIR/backend.log" 2>&1 &
     echo $! > "$PIDS_DIR/backend.pid"
   )
-  echo "backend:  started  (PID $(cat "$PIDS_DIR/backend.pid"))  →  logs/backend.log"
-fi
-
-# ── Frontend ───────────────────────────────────────────────────────────────────
-
-if is_running frontend; then
-  echo "frontend: already running (PID $(cat "$PIDS_DIR/frontend.pid"))"
-else
-  if [ ! -d "$SCRIPT_DIR/frontend/node_modules" ]; then
-    echo "ERROR: frontend/node_modules not found."
-    echo "       Run: cd frontend && yarn install"
-    exit 1
-  fi
-
-  (
-    cd "$SCRIPT_DIR/frontend"
-    # BROWSER=none prevents the dev server from opening a browser tab
-    nohup env BROWSER=none yarn start \
-      >> "$LOGS_DIR/frontend.log" 2>&1 &
-    echo $! > "$PIDS_DIR/frontend.pid"
-  )
-  echo "frontend: started  (PID $(cat "$PIDS_DIR/frontend.pid"))  →  logs/frontend.log"
+  echo "backend: started (PID $(cat "$PIDS_DIR/backend.pid"))  →  logs/backend.log"
 fi
 
 # ── Done ───────────────────────────────────────────────────────────────────────
 
 echo ""
-echo "WatchTower is running:"
-echo "  Frontend  →  http://localhost:3000"
-echo "  Backend   →  http://localhost:8001"
-echo "  API docs  →  http://localhost:8001/docs"
+echo "WatchTower backend is running:"
+echo "  API (internal)  →  http://127.0.0.1:8001"
+echo "  API docs        →  http://127.0.0.1:8001/docs"
+echo "  Frontend        →  served by nginx"
 echo ""
 echo "Useful commands:"
-echo "  ./stop.sh                     stop everything"
-echo "  tail -f logs/backend.log      live backend logs"
-echo "  tail -f logs/frontend.log     live frontend logs"
+echo "  ./stop.sh                   stop the backend"
+echo "  tail -f logs/backend.log    live backend logs"
