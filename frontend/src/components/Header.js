@@ -1,4 +1,4 @@
-import { Globe, RefreshCw, Database, AlertTriangle, Map, Network } from "lucide-react";
+import { Globe, RefreshCw, Database, AlertTriangle, Map, Network, Activity } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import { Button } from "./ui/button";
 
@@ -89,6 +89,19 @@ const Header = ({ dataLastFetch, sourcesUsed = [], nextFetchIn, onRefresh }) => 
             >
               <Network className="w-3.5 h-3.5" />
               Actor Network
+            </NavLink>
+            <NavLink
+              to="/life-trajectory"
+              className={({ isActive }) =>
+                `flex items-center gap-1.5 px-3 py-1 rounded-sm text-xs font-mono uppercase tracking-wider transition-colors border ${
+                  isActive
+                    ? "bg-zinc-800 border-zinc-700 text-white"
+                    : "border-transparent text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900"
+                }`
+              }
+            >
+              <Activity className="w-3.5 h-3.5" />
+              Lifelines
             </NavLink>
           </nav>
 
