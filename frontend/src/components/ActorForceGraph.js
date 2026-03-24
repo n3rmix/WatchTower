@@ -36,6 +36,7 @@ export default function ActorForceGraph({ rawData }) {
   const [yearRange, setYearRange]   = useState(null);
   const [minDeaths, setMinDeaths]   = useState(500);
   const [hovered,   setHovered]     = useState(null);
+  const [simAlpha,  setSimAlpha]    = useState(1);
 
   // Initialise year range once data arrives
   useEffect(() => {
@@ -55,6 +56,7 @@ export default function ActorForceGraph({ rawData }) {
     // Stop & clear previous render
     if (simulationRef.current) simulationRef.current.stop();
     d3.select(container).selectAll('svg').remove();
+    setSimAlpha(1);
 
     // ── Filter & aggregate dyads ──────────────────────────────────────────────
     const [yrA, yrB] = yearRange;
@@ -205,7 +207,11 @@ export default function ActorForceGraph({ rawData }) {
 
     simulationRef.current = simulation;
 
+    let tickCount = 0;
+    simulation.on('end', () => setSimAlpha(0));
     simulation.on('tick', () => {
+      tickCount++;
+      if (tickCount % 8 === 0) setSimAlpha(simulation.alpha());
       // Pull edge endpoints back from node edge (for clean arrow tips)
       linkEls
         .attr('x1', d => d.source.x)
@@ -342,7 +348,31 @@ export default function ActorForceGraph({ rawData }) {
       </div>
 
       {/* Force graph canvas */}
-      <div ref={containerRef} className="flex-1 min-h-0" />
+      <div className="flex-1 min-h-0 relative">
+        <div ref={containerRef} className="w-full h-full" />
+
+        {/* Simulation progress badge */}
+        {simAlpha > 0.015 && (
+          <div className="absolute top-3 right-3 bg-zinc-950/90 border border-zinc-800 rounded-lg px-3 py-2 text-[11px] font-mono backdrop-blur-sm">
+            <div className="flex items-center gap-2 text-zinc-400 mb-1.5">
+              <div
+                className="w-3 h-3 rounded-full border border-zinc-700 border-t-blue-400 animate-spin flex-shrink-0"
+                style={{ animationDuration: '0.8s' }}
+              />
+              <span>Simulating forces</span>
+              <span className="text-zinc-600 ml-auto pl-3">
+                {Math.round((1 - simAlpha) * 100)}%
+              </span>
+            </div>
+            <div className="w-36 h-0.5 bg-zinc-800 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-blue-500 rounded-full transition-all duration-200"
+                style={{ width: `${Math.round((1 - simAlpha) * 100)}%` }}
+              />
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* Footer */}
       <div className="flex items-center justify-between px-4 py-1 border-t border-zinc-800 text-[9px] font-mono text-zinc-600">

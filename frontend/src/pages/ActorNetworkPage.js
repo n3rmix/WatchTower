@@ -6,6 +6,64 @@ import ActorForceGraph from '../components/ActorForceGraph';
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
+const FETCH_MESSAGES = [
+  'Fetching UCDP dyadic conflict datasets…',
+  'Loading non-state actor records…',
+  'Parsing hostile dyad relationships…',
+  'Aggregating battle death statistics…',
+];
+
+function DataLoadingIndicator() {
+  const [idx, setIdx]       = useState(0);
+  const [fading, setFading] = useState(false);
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      setFading(true);
+      setTimeout(() => {
+        setIdx(i => (i + 1) % FETCH_MESSAGES.length);
+        setFading(false);
+      }, 300);
+    }, 2200);
+    return () => clearInterval(id);
+  }, []);
+
+  return (
+    <div className="flex flex-col items-center justify-center h-full gap-6">
+      {/* Dual counter-rotating rings */}
+      <div className="relative w-12 h-12">
+        <div className="absolute inset-0 rounded-full border-2 border-zinc-800" />
+        <div
+          className="absolute inset-0 rounded-full border-2 border-transparent border-t-blue-500 animate-spin"
+          style={{ animationDuration: '0.9s' }}
+        />
+        <div
+          className="absolute inset-1.5 rounded-full border border-transparent border-t-zinc-600 animate-spin"
+          style={{ animationDuration: '1.4s', animationDirection: 'reverse' }}
+        />
+      </div>
+
+      {/* Title + cycling message */}
+      <div className="text-center space-y-2">
+        <p className="text-zinc-200 font-mono text-xs font-bold tracking-widest uppercase">
+          Loading Actor Network
+        </p>
+        <p
+          className="text-zinc-500 font-mono text-[11px] transition-opacity duration-300 max-w-xs"
+          style={{ opacity: fading ? 0 : 1 }}
+        >
+          {FETCH_MESSAGES[idx]}
+        </p>
+      </div>
+
+      {/* Shimmer bar */}
+      <div className="w-40 h-px bg-zinc-800 rounded-full overflow-hidden">
+        <div className="h-full w-1/3 bg-blue-500/60 rounded-full animate-pulse" />
+      </div>
+    </div>
+  );
+}
+
 export default function ActorNetworkPage() {
   const [rawData, setRawData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -36,12 +94,7 @@ export default function ActorNetworkPage() {
       {/* Graph area */}
       <div className="flex-1 min-h-0">
         {loading ? (
-          <div className="flex flex-col items-center justify-center h-full gap-3">
-            <div className="w-8 h-8 border-2 border-zinc-700 border-t-blue-500 rounded-full animate-spin" />
-            <p className="text-zinc-500 font-mono text-xs animate-pulse">
-              Loading actor network — fetching UCDP dyadic &amp; non-state datasets…
-            </p>
-          </div>
+          <DataLoadingIndicator />
         ) : error ? (
           <div className="flex items-center justify-center h-full">
             <p className="text-red-500 font-mono text-sm">Error: {error}</p>
