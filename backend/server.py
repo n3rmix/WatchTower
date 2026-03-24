@@ -2021,14 +2021,18 @@ async def get_lifelines(conflict: str = "Ukraine", cohort_birth: int = 2000):
     conflict_start = _CONFLICT_START.get(country_key, 2020)
     conflict_start_age = max(0, conflict_start - cohort_birth)
 
-    # ── Derive annual excess mortality from cached conflict data ───────────────
+    # ── Derive annual excess mortality from MongoDB conflict data ──────────────
     annual_deaths = 0
-    global _conflicts_cache
-    if _conflicts_cache:
-        for rec in _conflicts_cache:
+    try:
+        conflicts_db = await db.conflicts.find(
+            {}, {"_id": 0, "country": 1, "total_deaths": 1}
+        ).to_list(100)
+        for rec in conflicts_db:
             rec_country = rec.get("country", "")
             if conflict.lower() in rec_country.lower() or rec_country.lower() in conflict.lower():
                 annual_deaths = max(annual_deaths, rec.get("total_deaths", 0))
+    except Exception:
+        pass  # Proceed with zero excess mortality if DB unavailable
     # Use a conservative annual rate (total deaths / conflict duration / population)
     conflict_duration = max(1, now.year - conflict_start)
     annual_excess_rate = min((annual_deaths / conflict_duration) / population, 0.05)
