@@ -1,12 +1,18 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState } from 'react';
 import axios from 'axios';
 import Header from '../components/Header';
 import ActorForceGraph from '../components/ActorForceGraph';
-import { normalizeRegion } from '../utils/regionUtils';
+import { UCDP_REGION_MAP } from '../utils/regionUtils';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
+const ALL_REGIONS = Object.values(UCDP_REGION_MAP).sort();
+const DEFAULT_YEAR_MIN = 1946;
+const DEFAULT_YEAR_MAX = 2024;
+const DEFAULT_YEAR_FROM = 2015;
+
+// ── Loading indicator (shown after Build is clicked, while API fetches) ───────
 const FETCH_MESSAGES = [
   'Fetching UCDP dyadic conflict datasets…',
   'Loading non-state actor records…',
@@ -15,23 +21,19 @@ const FETCH_MESSAGES = [
 ];
 
 function DataLoadingIndicator() {
-  const [idx, setIdx]       = useState(0);
-  const [fading, setFading] = useState(false);
+  const [idx, setIdx]       = React.useState(0);
+  const [fading, setFading] = React.useState(false);
 
-  useEffect(() => {
+  React.useEffect(() => {
     const id = setInterval(() => {
       setFading(true);
-      setTimeout(() => {
-        setIdx(i => (i + 1) % FETCH_MESSAGES.length);
-        setFading(false);
-      }, 300);
+      setTimeout(() => { setIdx(i => (i + 1) % FETCH_MESSAGES.length); setFading(false); }, 300);
     }, 2200);
     return () => clearInterval(id);
   }, []);
 
   return (
     <div className="flex flex-col items-center justify-center h-full gap-6">
-      {/* Dual counter-rotating rings */}
       <div className="relative w-12 h-12">
         <div className="absolute inset-0 rounded-full border-2 border-zinc-800" />
         <div
@@ -43,11 +45,9 @@ function DataLoadingIndicator() {
           style={{ animationDuration: '1.4s', animationDirection: 'reverse' }}
         />
       </div>
-
-      {/* Title + cycling message */}
       <div className="text-center space-y-2">
         <p className="text-zinc-200 font-mono text-xs font-bold tracking-widest uppercase">
-          Loading Actor Network
+          Building Actor Network
         </p>
         <p
           className="text-zinc-500 font-mono text-[11px] transition-opacity duration-300 max-w-xs"
@@ -56,8 +56,6 @@ function DataLoadingIndicator() {
           {FETCH_MESSAGES[idx]}
         </p>
       </div>
-
-      {/* Shimmer bar */}
       <div className="w-40 h-px bg-zinc-800 rounded-full overflow-hidden">
         <div className="h-full w-1/3 bg-blue-500/60 rounded-full animate-pulse" />
       </div>
@@ -65,49 +63,12 @@ function DataLoadingIndicator() {
   );
 }
 
-function NetworkConfigPanel({ rawData, onBuild }) {
-  const yearMin = rawData.year_min ?? 1946;
-  const yearMax = rawData.year_max ?? 2024;
-
-  const [fromYear,  setFromYear]  = useState(Math.max(yearMin, 2015));
-  const [toYear,    setToYear]    = useState(yearMax);
+// ── Configuration panel (shown first, before any API call) ────────────────────
+function NetworkConfigPanel({ onBuild }) {
+  const [fromYear,  setFromYear]  = useState(DEFAULT_YEAR_FROM);
+  const [toYear,    setToYear]    = useState(DEFAULT_YEAR_MAX);
   const [minDeaths, setMinDeaths] = useState(500);
-
-  const availableRegions = useMemo(() => {
-    const seen = new Set();
-    rawData.dyads.forEach(d => {
-      const r = normalizeRegion(d.region);
-      if (r && r !== 'Unknown') seen.add(r);
-    });
-    return [...seen].sort();
-  }, [rawData.dyads]);
-
-  const [selectedRegions, setSelectedRegions] = useState(() => new Set(availableRegions));
-
-  useEffect(() => {
-    setSelectedRegions(new Set(availableRegions));
-  }, [availableRegions]);
-
-  const estimate = useMemo(() => {
-    const filtered = rawData.dyads.filter(d =>
-      d.year >= fromYear &&
-      d.year <= toYear &&
-      selectedRegions.has(normalizeRegion(d.region))
-    );
-    const linkMap = new Map();
-    filtered.forEach(d => {
-      const [kA, kB] = d.side_a < d.side_b
-        ? [d.side_a, d.side_b]
-        : [d.side_b, d.side_a];
-      const key = `${kA}|||${kB}`;
-      if (!linkMap.has(key)) linkMap.set(key, { side_a: d.side_a, side_b: d.side_b, bd_best: 0 });
-      linkMap.get(key).bd_best += d.bd_best;
-    });
-    const edges = [...linkMap.values()].filter(l => l.bd_best >= minDeaths);
-    const actors = new Set();
-    edges.forEach(l => { actors.add(l.side_a); actors.add(l.side_b); });
-    return { actors: actors.size, edges: edges.length };
-  }, [rawData.dyads, fromYear, toYear, minDeaths, selectedRegions]);
+  const [selectedRegions, setSelectedRegions] = useState(new Set(ALL_REGIONS));
 
   const toggleRegion = region => {
     setSelectedRegions(prev => {
@@ -117,10 +78,9 @@ function NetworkConfigPanel({ rawData, onBuild }) {
     });
   };
 
-  const allSelected = selectedRegions.size === availableRegions.length;
-  const toggleAll   = () => setSelectedRegions(allSelected ? new Set() : new Set(availableRegions));
-
-  const canBuild = estimate.actors > 0 && estimate.edges > 0;
+  const allSelected = selectedRegions.size === ALL_REGIONS.length;
+  const toggleAll   = () => setSelectedRegions(allSelected ? new Set() : new Set(ALL_REGIONS));
+  const canBuild    = selectedRegions.size > 0;
 
   return (
     <div className="flex flex-col items-center justify-center h-full bg-zinc-950 p-8">
@@ -143,7 +103,7 @@ function NetworkConfigPanel({ rawData, onBuild }) {
             <span className="text-zinc-500 font-mono text-xs w-8">From</span>
             <input
               type="range"
-              min={yearMin} max={toYear - 1}
+              min={DEFAULT_YEAR_MIN} max={toYear - 1}
               value={fromYear}
               onChange={e => setFromYear(+e.target.value)}
               className="flex-1 accent-blue-500"
@@ -154,7 +114,7 @@ function NetworkConfigPanel({ rawData, onBuild }) {
             <span className="text-zinc-500 font-mono text-xs w-8">To</span>
             <input
               type="range"
-              min={fromYear + 1} max={yearMax}
+              min={fromYear + 1} max={DEFAULT_YEAR_MAX}
               value={toYear}
               onChange={e => setToYear(+e.target.value)}
               className="flex-1 accent-blue-500"
@@ -194,7 +154,7 @@ function NetworkConfigPanel({ rawData, onBuild }) {
             </button>
           </div>
           <div className="flex flex-wrap gap-2">
-            {availableRegions.map(region => (
+            {ALL_REGIONS.map(region => (
               <label
                 key={region}
                 className={`flex items-center gap-1.5 px-2 py-1 rounded border cursor-pointer text-[11px] font-mono transition-colors ${
@@ -215,34 +175,20 @@ function NetworkConfigPanel({ rawData, onBuild }) {
           </div>
         </div>
 
-        {/* Live estimate */}
-        <div className="bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-3 flex items-center justify-between">
-          <span className="text-[10px] font-mono text-zinc-500 uppercase tracking-wider">
-            Estimated network
-          </span>
-          <div className="flex items-center gap-4 font-mono">
-            <span>
-              <span className="text-blue-400 text-sm font-bold">{estimate.actors}</span>
-              <span className="text-zinc-600 text-[10px] ml-1">actors</span>
-            </span>
-            <span className="text-zinc-700">·</span>
-            <span>
-              <span className="text-zinc-300 text-sm font-bold">{estimate.edges}</span>
-              <span className="text-zinc-600 text-[10px] ml-1">edges</span>
-            </span>
-          </div>
-        </div>
-
-        {/* Zero-result warning */}
+        {/* No region warning */}
         {!canBuild && (
           <p className="text-[10px] font-mono text-amber-500 text-center">
-            No dyads match the current filters — adjust year range, deaths threshold, or regions.
+            Select at least one region to build the network.
           </p>
         )}
 
         {/* Build button */}
         <button
-          onClick={() => onBuild({ yearRange: [fromYear, toYear], minDeaths, regions: new Set(selectedRegions) })}
+          onClick={() => onBuild({
+            yearRange: [fromYear, toYear],
+            minDeaths,
+            regions: new Set(selectedRegions),
+          })}
           disabled={!canBuild}
           className={`w-full py-2.5 rounded-lg font-mono text-xs uppercase tracking-widest font-bold transition-colors ${
             canBuild
@@ -253,10 +199,8 @@ function NetworkConfigPanel({ rawData, onBuild }) {
           Build Network ▶
         </button>
 
-        {/* Data source note */}
         <p className="text-[9px] font-mono text-zinc-700 text-center">
-          {rawData.total_records?.toLocaleString()} dyad-year records loaded ·{' '}
-          {rawData.data_sources?.join(' · ')}
+          Data: UCDP GED · UCDP Non-State · all years {DEFAULT_YEAR_MIN}–{DEFAULT_YEAR_MAX}
         </p>
 
       </div>
@@ -264,27 +208,27 @@ function NetworkConfigPanel({ rawData, onBuild }) {
   );
 }
 
+// ── Page ──────────────────────────────────────────────────────────────────────
 export default function ActorNetworkPage() {
-  const [rawData,      setRawData]      = useState(null);
-  const [loading,      setLoading]      = useState(true);
-  const [error,        setError]        = useState(null);
-  const [configured,   setConfigured]   = useState(false);
-  const [initYearRange, setInitYearRange] = useState(null);
-  const [initMinDeaths, setInitMinDeaths] = useState(500);
-  const [initRegions,   setInitRegions]   = useState(null);
+  const [rawData,     setRawData]     = useState(null);
+  const [loading,     setLoading]     = useState(false);
+  const [error,       setError]       = useState(null);
+  const [buildConfig, setBuildConfig] = useState(null); // null = not yet configured
 
-  useEffect(() => {
+  const handleBuild = ({ yearRange, minDeaths, regions }) => {
+    setBuildConfig({ yearRange, minDeaths, regions });
     setLoading(true);
+    setError(null);
+    setRawData(null);
     axios.get(`${API}/actor-network`)
       .then(res => { setRawData(res.data); setLoading(false); })
       .catch(err => { setError(err.message); setLoading(false); });
-  }, []);
+  };
 
-  const handleBuild = ({ yearRange, minDeaths, regions }) => {
-    setInitYearRange(yearRange);
-    setInitMinDeaths(minDeaths);
-    setInitRegions(regions);
-    setConfigured(true);
+  const handleReconfigure = () => {
+    setBuildConfig(null);
+    setRawData(null);
+    setError(null);
   };
 
   return (
@@ -302,29 +246,41 @@ export default function ActorNetworkPage() {
         </p>
       </div>
 
-      {/* Graph area */}
+      {/* Content area */}
       <div className="flex-1 min-h-0">
-        {loading ? (
+        {!buildConfig ? (
+          <NetworkConfigPanel onBuild={handleBuild} />
+        ) : loading ? (
           <DataLoadingIndicator />
         ) : error ? (
-          <div className="flex items-center justify-center h-full">
+          <div className="flex flex-col items-center justify-center h-full gap-3">
             <p className="text-red-500 font-mono text-sm">Error: {error}</p>
+            <button
+              onClick={handleReconfigure}
+              className="text-[10px] font-mono text-blue-500 hover:text-blue-400 border border-zinc-700 px-3 py-1.5 rounded"
+            >
+              ← Reconfigure
+            </button>
           </div>
         ) : rawData?.dyads?.length === 0 ? (
-          <div className="flex items-center justify-center h-full">
-            <p className="text-zinc-500 font-mono text-sm">No dyadic records returned by API.</p>
+          <div className="flex flex-col items-center justify-center h-full gap-3">
+            <p className="text-zinc-500 font-mono text-sm">No dyadic records match these filters.</p>
+            <button
+              onClick={handleReconfigure}
+              className="text-[10px] font-mono text-blue-500 hover:text-blue-400 border border-zinc-700 px-3 py-1.5 rounded"
+            >
+              ← Reconfigure
+            </button>
           </div>
-        ) : !configured ? (
-          <NetworkConfigPanel rawData={rawData} onBuild={handleBuild} />
-        ) : (
+        ) : rawData ? (
           <ActorForceGraph
             rawData={rawData}
-            initialYearRange={initYearRange}
-            initialMinDeaths={initMinDeaths}
-            initialRegions={initRegions}
-            onReconfigure={() => setConfigured(false)}
+            initialYearRange={buildConfig.yearRange}
+            initialMinDeaths={buildConfig.minDeaths}
+            initialRegions={buildConfig.regions}
+            onReconfigure={handleReconfigure}
           />
-        )}
+        ) : null}
       </div>
     </div>
   );
