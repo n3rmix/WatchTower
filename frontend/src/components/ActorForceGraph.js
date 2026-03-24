@@ -1,5 +1,6 @@
 import React, { useRef, useEffect, useState } from 'react';
 import * as d3 from 'd3';
+import { normalizeRegion } from '../utils/regionUtils';
 
 // ── Actor type palette ────────────────────────────────────────────────────────
 const TYPE_COLORS = {
@@ -29,21 +30,23 @@ const edgeWidth  = l =>
   Math.max(0.8, Math.log10((l.bd_best || 1) + 1) * 2.8);
 
 // ─────────────────────────────────────────────────────────────────────────────
-export default function ActorForceGraph({ rawData }) {
+export default function ActorForceGraph({
+  rawData,
+  initialYearRange,
+  initialMinDeaths,
+  initialRegions,
+  onReconfigure,
+}) {
   const containerRef  = useRef(null);
   const simulationRef = useRef(null);
 
-  const [yearRange, setYearRange]   = useState(null);
-  const [minDeaths, setMinDeaths]   = useState(500);
-  const [hovered,   setHovered]     = useState(null);
-  const [simAlpha,  setSimAlpha]    = useState(1);
-
-  // Initialise year range once data arrives
-  useEffect(() => {
-    if (rawData && !yearRange) {
-      setYearRange([Math.max(rawData.year_min ?? 1946, 2015), rawData.year_max ?? 2024]);
-    }
-  }, [rawData, yearRange]);
+  const [yearRange, setYearRange] = useState(
+    () => initialYearRange ?? [Math.max(rawData?.year_min ?? 1946, 2015), rawData?.year_max ?? 2024]
+  );
+  const [minDeaths, setMinDeaths] = useState(() => initialMinDeaths ?? 500);
+  const [regions,   setRegions]   = useState(() => initialRegions ?? null);
+  const [hovered,   setHovered]   = useState(null);
+  const [simAlpha,  setSimAlpha]  = useState(1);
 
   // ── Main D3 effect ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -60,7 +63,13 @@ export default function ActorForceGraph({ rawData }) {
 
     // ── Filter & aggregate dyads ──────────────────────────────────────────────
     const [yrA, yrB] = yearRange;
-    const filtered = rawData.dyads.filter(d => d.year >= yrA && d.year <= yrB);
+    const filtered = rawData.dyads.filter(d => {
+      const inYear   = d.year >= yrA && d.year <= yrB;
+      const inRegion = !regions || regions.size === 0
+        ? true
+        : regions.has(normalizeRegion(d.region));
+      return inYear && inRegion;
+    });
 
     // Aggregate per undirected actor pair, keeping directional info from first appearance
     const linkMap = new Map();
@@ -237,7 +246,7 @@ export default function ActorForceGraph({ rawData }) {
       simulation.stop();
       d3.select(container).selectAll('svg').remove();
     };
-  }, [rawData, yearRange, minDeaths]);
+  }, [rawData, yearRange, minDeaths, regions]);
 
   // ── Derived metadata for controls ─────────────────────────────────────────
   const yearMin = rawData?.year_min ?? 1946;
@@ -293,6 +302,16 @@ export default function ActorForceGraph({ rawData }) {
 
       {/* Controls bar */}
       <div className="flex items-center gap-5 px-4 py-2 bg-zinc-900/60 border-b border-zinc-800 flex-wrap text-xs font-mono">
+
+        {/* Reconfigure */}
+        {onReconfigure && (
+          <button
+            onClick={onReconfigure}
+            className="flex items-center gap-1 px-2 py-1 rounded border border-zinc-700 text-zinc-500 hover:border-zinc-500 hover:text-zinc-300 font-mono text-[10px] uppercase tracking-wider transition-colors"
+          >
+            ← Reconfigure
+          </button>
+        )}
 
         {/* Year from */}
         <label className="flex items-center gap-2">
