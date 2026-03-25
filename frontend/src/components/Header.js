@@ -45,6 +45,17 @@ const Header = ({ dataLastFetch, sourcesUsed = [], nextFetchIn, onRefresh }) => 
                 </a>
                 {" "}— thank you for freely providing access.
               </p>
+              <p className="text-xs text-zinc-600 font-mono mt-0.5">
+                Built by{" "}
+                <a
+                  href="https://www.cybrain.tech/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-zinc-400 hover:text-red-400 underline underline-offset-2 transition-colors"
+                >
+                  cybrain.tech
+                </a>
+              </p>
             </div>
           </div>
 
