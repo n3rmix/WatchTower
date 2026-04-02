@@ -221,16 +221,19 @@ export default function ActorNetworkPage() {
     setError(null);
     setRawData(null);
 
-    const attempt = (retries = 3, delay = 8000) => {
+    const attempt = (retries = 10, delay = 4000) => {
       axios.get(`${API}/actor-network`)
         .then(res => { setRawData(res.data); setLoading(false); })
         .catch(err => {
           const status = err?.response?.status;
-          // 503 = cache still warming — retry automatically
+          // 503 = cache still warming — retry automatically up to 10 times (~40s window)
           if (status === 503 && retries > 0) {
             setTimeout(() => attempt(retries - 1, delay), delay);
           } else {
-            setError(err?.response?.data?.detail || err.message);
+            const detail = err?.response?.data?.detail || err.message;
+            setError(status === 503
+              ? 'Data is still loading from UCDP. Click Build again in a moment.'
+              : detail);
             setLoading(false);
           }
         });
@@ -267,13 +270,21 @@ export default function ActorNetworkPage() {
           <DataLoadingIndicator />
         ) : error ? (
           <div className="flex flex-col items-center justify-center h-full gap-3">
-            <p className="text-red-500 font-mono text-sm">Error: {error}</p>
-            <button
-              onClick={handleReconfigure}
-              className="text-[10px] font-mono text-blue-500 hover:text-blue-400 border border-zinc-700 px-3 py-1.5 rounded"
-            >
-              ← Reconfigure
-            </button>
+            <p className="text-amber-400 font-mono text-sm text-center max-w-sm">{error}</p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => handleBuild(buildConfig)}
+                className="text-[10px] font-mono text-blue-400 hover:text-blue-300 border border-zinc-700 hover:border-blue-500 px-3 py-1.5 rounded transition-colors"
+              >
+                ↺ Try Again
+              </button>
+              <button
+                onClick={handleReconfigure}
+                className="text-[10px] font-mono text-zinc-500 hover:text-zinc-400 border border-zinc-700 px-3 py-1.5 rounded transition-colors"
+              >
+                ← Reconfigure
+              </button>
+            </div>
           </div>
         ) : rawData?.dyads?.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full gap-3">
