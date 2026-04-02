@@ -1030,6 +1030,9 @@ async def refresh_all_data():
     except Exception as e:
         logger.error(f"Error during data refresh: {e}")
 
+    # Pre-warm actor-network cache in background so the first user request is instant.
+    asyncio.create_task(_build_actor_network_cache())
+
 
 # ─── API Routes ───────────────────────────────────────────────────────────────
 
@@ -1647,6 +1650,151 @@ async def _fetch_ucdp_all_pages(
     return all_results
 
 
+async def _build_actor_network_cache() -> Optional[Dict]:
+    """Fetch UCDP Dyadic + Non-State datasets and populate the actor-network cache.
+
+    Uses the ucdpdy endpoint (one global paginated fetch) instead of per-country
+    GED aggregation, which was the source of 504 timeouts.  Falls back to
+    GED-per-country only if ucdpdy returns no results.
+    """
+    global _actor_network_cache, _actor_network_cache_ts
+
+    now = datetime.now(timezone.utc)
+    ucdp_api_key = get_ucdp_api_key()
+    hdrs: Dict[str, str] = {"User-Agent": "WatchTower/1.0"}
+    if ucdp_api_key:
+        hdrs["x-ucdp-access-token"] = ucdp_api_key
+
+    dyads: List[Dict] = []
+    data_sources: List[str] = []
+
+    async with aiohttp.ClientSession(headers={"User-Agent": "WatchTower/1.0"}) as session:
+
+        # ── 1. UCDP Dyadic dataset — one global fetch, pre-aggregated dyad-years ──
+        try:
+            raw_dy = await _fetch_ucdp_all_pages(session, f"ucdpdy/{UCDP_VERSION}", hdrs)
+            if raw_dy:
+                for r in raw_dy:
+                    year = r.get("year")
+                    if not year:
+                        continue
+                    side_a = (r.get("side_a") or "").strip()
+                    side_b = (r.get("side_b") or "").strip()
+                    if not side_a or not side_b:
+                        continue
+                    dyads.append({
+                        "side_a":        side_a,
+                        "side_b":        side_b,
+                        "side_a_type":   _classify_actor_type(side_a),
+                        "side_b_type":   _classify_actor_type(side_b),
+                        "bd_best":       int(r.get("bd_best") or 0),
+                        "year":          int(year),
+                        "conflict_name": (r.get("conflict_name") or r.get("dyad_name") or "").strip(),
+                        "region":        (r.get("region") or "").strip(),
+                        "source":        "dyadic",
+                    })
+                data_sources.append(f"UCDP Dyadic {UCDP_VERSION}")
+                logger.info(f"Actor network: {len(raw_dy)} dyadic records fetched")
+            else:
+                # Fallback: aggregate GED events per tracked country
+                logger.warning("Actor network: ucdpdy returned 0 records, falling back to GED aggregation")
+                all_gw_codes = list({**UCDP_COUNTRY_MAP, 'Iran': '630'}.values())
+                ged_tasks = [
+                    _fetch_ucdp_all_pages(
+                        session, f"gedevents/{UCDP_VERSION}", hdrs,
+                        {"Country": gw, "StartDate": "2010-01-01"},
+                    )
+                    for gw in all_gw_codes
+                ]
+                ged_results = await asyncio.gather(*ged_tasks, return_exceptions=True)
+                dyad_year: Dict[tuple, Dict] = {}
+                for country_events in ged_results:
+                    if isinstance(country_events, Exception):
+                        continue
+                    for ev in country_events:
+                        ds = (ev.get("date_start") or "")[:10]
+                        year = int(ds[:4]) if len(ds) >= 4 else None
+                        if not year:
+                            continue
+                        side_a = (ev.get("side_a") or "").strip()
+                        side_b = (ev.get("side_b") or "").strip()
+                        if not side_a or not side_b:
+                            continue
+                        dyad_name = ev.get("dyad_name") or f"{side_a} - {side_b}"
+                        key = (dyad_name, year)
+                        if key not in dyad_year:
+                            dyad_year[key] = {
+                                "side_a":        side_a,
+                                "side_b":        side_b,
+                                "bd_best":       0,
+                                "conflict_name": (ev.get("conflict_name") or "").strip(),
+                                "region":        (ev.get("region") or "").strip(),
+                            }
+                        dyad_year[key]["bd_best"] += int(ev.get("best") or 0)
+                for (_, year), rec in dyad_year.items():
+                    dyads.append({
+                        "side_a":        rec["side_a"],
+                        "side_b":        rec["side_b"],
+                        "side_a_type":   _classify_actor_type(rec["side_a"]),
+                        "side_b_type":   _classify_actor_type(rec["side_b"]),
+                        "bd_best":       rec["bd_best"],
+                        "year":          year,
+                        "conflict_name": rec["conflict_name"],
+                        "region":        rec["region"],
+                        "source":        "gedevents",
+                    })
+                data_sources.append(f"UCDP GED {UCDP_VERSION}")
+                logger.info(f"Actor network: {len(dyad_year)} dyad-year records from GED fallback")
+        except Exception as exc:
+            logger.error(f"Actor network: dyadic fetch error: {exc}")
+
+        # ── 2. UCDP Non-State dataset ──────────────────────────────────────────
+        try:
+            raw_ns = await _fetch_ucdp_all_pages(session, f"nonstate/{UCDP_VERSION}", hdrs)
+            for r in raw_ns:
+                year = r.get("year")
+                if not year:
+                    continue
+                actor_a = (r.get("actor_a") or r.get("side_a") or "").strip()
+                actor_b = (r.get("actor_b") or r.get("side_b") or "").strip()
+                if not actor_a or not actor_b:
+                    continue
+                dyads.append({
+                    "side_a":        actor_a,
+                    "side_b":        actor_b,
+                    "side_a_type":   _classify_actor_type(actor_a),
+                    "side_b_type":   _classify_actor_type(actor_b),
+                    "bd_best":       int(r.get("bd_best") or 0),
+                    "year":          int(year),
+                    "conflict_name": (r.get("conflict_name") or r.get("dyad_name") or "").strip(),
+                    "region":        (r.get("region") or "").strip(),
+                    "source":        "nonstate",
+                })
+            data_sources.append(f"UCDP Non-State {UCDP_VERSION}")
+            logger.info(f"Actor network: {len(raw_ns)} non-state records fetched")
+        except Exception as exc:
+            logger.error(f"Actor network: non-state fetch error: {exc}")
+
+    if not dyads:
+        logger.warning("Actor network: no dyads collected — cache not updated")
+        return None
+
+    years = sorted({d["year"] for d in dyads})
+    result = {
+        "dyads":         dyads,
+        "years":         years,
+        "year_min":      min(years),
+        "year_max":      max(years),
+        "total_records": len(dyads),
+        "data_sources":  data_sources,
+        "generated_at":  now.isoformat(),
+    }
+    _actor_network_cache    = result
+    _actor_network_cache_ts = now
+    logger.info(f"Actor network cache updated: {len(dyads)} total dyads")
+    return result
+
+
 @api_router.get("/actor-network")
 async def get_actor_network():
     """Actor Relationship Network — directed dyadic conflict graph.
@@ -1675,116 +1823,18 @@ async def get_actor_network():
     ):
         return _actor_network_cache
 
-    ucdp_api_key = get_ucdp_api_key()
-    hdrs: Dict[str, str] = {}
-    if ucdp_api_key:
-        hdrs["x-ucdp-access-token"] = ucdp_api_key
+    # Cache is cold — build it now with a hard timeout to prevent 504s.
+    try:
+        result = await asyncio.wait_for(_build_actor_network_cache(), timeout=180.0)
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=503,
+            detail="Actor network data is still loading from UCDP. Please try again in 1–2 minutes.",
+        )
 
-    dyads: List[Dict] = []
-    data_sources: List[str] = []
+    if result is None:
+        raise HTTPException(status_code=503, detail="Actor network data unavailable — UCDP fetch returned no results.")
 
-    async with aiohttp.ClientSession(headers={"User-Agent": "WatchTower/1.0"}) as session:
-
-        # ── 1. State-based dyads via GED gedevents (ucdpdy is not a public endpoint)
-        # Fetch GED events per monitored country, then aggregate by (dyad_name, year).
-        # GED events carry side_a, side_b, dyad_name, best (deaths), date_start.
-        try:
-            # All countries in the clock map (includes Iran GW=630)
-            all_gw_codes = list({**UCDP_COUNTRY_MAP, 'Iran': '630'}.values())
-            ged_tasks = [
-                _fetch_ucdp_all_pages(
-                    session,
-                    f"gedevents/{UCDP_VERSION}",
-                    hdrs,
-                    {"Country": gw, "StartDate": "2000-01-01"},
-                )
-                for gw in all_gw_codes
-            ]
-            ged_results = await asyncio.gather(*ged_tasks, return_exceptions=True)
-
-            # Aggregate individual events → dyad-year buckets
-            dyad_year: Dict[tuple, Dict] = {}
-            for country_events in ged_results:
-                if isinstance(country_events, Exception):
-                    continue
-                for ev in country_events:
-                    ds = (ev.get("date_start") or "")[:10]
-                    year = int(ds[:4]) if len(ds) >= 4 else None
-                    if not year:
-                        continue
-                    side_a = (ev.get("side_a") or "").strip()
-                    side_b = (ev.get("side_b") or "").strip()
-                    if not side_a or not side_b:
-                        continue
-                    dyad_name = ev.get("dyad_name") or f"{side_a} - {side_b}"
-                    key = (dyad_name, year)
-                    if key not in dyad_year:
-                        dyad_year[key] = {
-                            "side_a":        side_a,
-                            "side_b":        side_b,
-                            "bd_best":       0,
-                            "conflict_name": (ev.get("conflict_name") or "").strip(),
-                            "region":        (ev.get("region") or "").strip(),
-                        }
-                    dyad_year[key]["bd_best"] += int(ev.get("best") or 0)
-
-            for (_, year), rec in dyad_year.items():
-                dyads.append({
-                    "side_a":        rec["side_a"],
-                    "side_b":        rec["side_b"],
-                    "side_a_type":   _classify_actor_type(rec["side_a"]),
-                    "side_b_type":   _classify_actor_type(rec["side_b"]),
-                    "bd_best":       rec["bd_best"],
-                    "year":          year,
-                    "conflict_name": rec["conflict_name"],
-                    "region":        rec["region"],
-                    "source":        "gedevents",
-                })
-            data_sources.append(f"UCDP GED {UCDP_VERSION}")
-            logger.info(f"Actor network: {len(dyad_year)} state-based dyad-year records from GED")
-        except Exception as exc:
-            logger.error(f"Actor network: GED dyadic fetch error: {exc}")
-
-        # ── 2. UCDP Non-State dataset ─────────────────────────────────────────
-        try:
-            raw_ns = await _fetch_ucdp_all_pages(session, f"nonstate/{UCDP_VERSION}", hdrs)
-            for r in raw_ns:
-                year = r.get("year")
-                if not year:
-                    continue
-                actor_a = (r.get("actor_a") or r.get("side_a") or "").strip()
-                actor_b = (r.get("actor_b") or r.get("side_b") or "").strip()
-                if not actor_a or not actor_b:
-                    continue
-                dyads.append({
-                    "side_a":        actor_a,
-                    "side_b":        actor_b,
-                    "side_a_type":   _classify_actor_type(actor_a),
-                    "side_b_type":   _classify_actor_type(actor_b),
-                    "bd_best":       int(r.get("bd_best") or 0),
-                    "year":          int(year),
-                    "conflict_name": (r.get("conflict_name") or r.get("dyad_name") or "").strip(),
-                    "region":        (r.get("region") or "").strip(),
-                    "source":        "nonstate",
-                })
-            data_sources.append(f"UCDP Non-State {UCDP_VERSION}")
-            logger.info(f"Actor network: {len(raw_ns)} non-state records fetched")
-        except Exception as exc:
-            logger.error(f"Actor network: non-state fetch error: {exc}")
-
-    years = sorted({d["year"] for d in dyads}) if dyads else []
-    result = {
-        "dyads":         dyads,
-        "years":         years,
-        "year_min":      min(years) if years else 1946,
-        "year_max":      max(years) if years else 2024,
-        "total_records": len(dyads),
-        "data_sources":  data_sources,
-        "generated_at":  now.isoformat(),
-    }
-
-    _actor_network_cache    = result
-    _actor_network_cache_ts = now
     return result
 
 

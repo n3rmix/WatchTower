@@ -220,9 +220,22 @@ export default function ActorNetworkPage() {
     setLoading(true);
     setError(null);
     setRawData(null);
-    axios.get(`${API}/actor-network`)
-      .then(res => { setRawData(res.data); setLoading(false); })
-      .catch(err => { setError(err.message); setLoading(false); });
+
+    const attempt = (retries = 3, delay = 8000) => {
+      axios.get(`${API}/actor-network`)
+        .then(res => { setRawData(res.data); setLoading(false); })
+        .catch(err => {
+          const status = err?.response?.status;
+          // 503 = cache still warming — retry automatically
+          if (status === 503 && retries > 0) {
+            setTimeout(() => attempt(retries - 1, delay), delay);
+          } else {
+            setError(err?.response?.data?.detail || err.message);
+            setLoading(false);
+          }
+        });
+    };
+    attempt();
   };
 
   const handleReconfigure = () => {
