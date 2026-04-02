@@ -1576,6 +1576,7 @@ async def get_humanitarian_clock(
 
 _actor_network_cache: Optional[Dict] = None
 _actor_network_cache_ts: Optional[datetime] = None
+_actor_network_building: bool = False   # guard: prevents concurrent duplicate builds
 _ACTOR_CACHE_TTL = 3600  # 1 hour — same cadence as main data refresh
 
 
@@ -1653,10 +1654,22 @@ async def _fetch_ucdp_all_pages(
 async def _build_actor_network_cache() -> Optional[Dict]:
     """Fetch UCDP Dyadic + Non-State datasets and populate the actor-network cache.
 
-    Uses the ucdpdy endpoint (one global paginated fetch) instead of per-country
-    GED aggregation, which was the source of 504 timeouts.  Falls back to
-    GED-per-country only if ucdpdy returns no results.
+    Non-blocking: called only as asyncio.create_task so the HTTP handler never
+    waits on it.  A building guard prevents duplicate concurrent fetches.
     """
+    global _actor_network_cache, _actor_network_cache_ts, _actor_network_building
+
+    if _actor_network_building:
+        logger.debug("Actor network build already in progress — skipping duplicate")
+        return None
+    _actor_network_building = True
+    try:
+        return await _do_build_actor_network_cache()
+    finally:
+        _actor_network_building = False
+
+
+async def _do_build_actor_network_cache() -> Optional[Dict]:
     global _actor_network_cache, _actor_network_cache_ts
 
     now = datetime.now(timezone.utc)
@@ -1799,19 +1812,9 @@ async def _build_actor_network_cache() -> Optional[Dict]:
 async def get_actor_network():
     """Actor Relationship Network — directed dyadic conflict graph.
 
-    Returns every UCDP dyad-year record from the Dyadic and Non-State
-    datasets (full history).  The frontend handles year-range and minimum-
-    deaths filtering client-side for instant temporal scrubbing without
-    additional round-trips.
-
-    Each record:
-      side_a / side_b     — actor names
-      side_a_type / side_b_type — classified actor category
-      bd_best             — battle deaths best estimate for that year
-      year                — calendar year
-      conflict_name       — human-readable label
-      region              — UCDP region string
-      source              — 'dyadic' | 'nonstate'
+    Returns cached data instantly.  If the cache is cold, fires a background
+    build and immediately returns 503 so the frontend can retry (typically
+    within 8 seconds) — the HTTP handler never blocks on the UCDP fetch.
     """
     global _actor_network_cache, _actor_network_cache_ts
 
@@ -1823,19 +1826,13 @@ async def get_actor_network():
     ):
         return _actor_network_cache
 
-    # Cache is cold — build it now with a hard timeout to prevent 504s.
-    try:
-        result = await asyncio.wait_for(_build_actor_network_cache(), timeout=180.0)
-    except asyncio.TimeoutError:
-        raise HTTPException(
-            status_code=503,
-            detail="Actor network data is still loading from UCDP. Please try again in 1–2 minutes.",
-        )
-
-    if result is None:
-        raise HTTPException(status_code=503, detail="Actor network data unavailable — UCDP fetch returned no results.")
-
-    return result
+    # Cache cold — kick off a background build (guard prevents duplicates)
+    # and tell the client to retry in a few seconds.
+    asyncio.create_task(_build_actor_network_cache())
+    raise HTTPException(
+        status_code=503,
+        detail="Actor network is loading. Retrying automatically…",
+    )
 
 
 # ─── Life trajectory / interrupted lifelines ──────────────────────────────────
