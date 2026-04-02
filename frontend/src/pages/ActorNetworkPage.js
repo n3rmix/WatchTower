@@ -8,9 +8,9 @@ const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
 const ALL_REGIONS = Object.values(UCDP_REGION_MAP).sort();
-const DEFAULT_YEAR_MIN = 1946;
-const DEFAULT_YEAR_MAX = 2024;
-const DEFAULT_YEAR_FROM = 2015;
+const DEFAULT_YEAR_MIN = 2020;
+const DEFAULT_YEAR_MAX = 2026;
+const DEFAULT_YEAR_FROM = 2020;
 
 // ── Loading indicator (shown after Build is clicked, while API fetches) ───────
 const FETCH_MESSAGES = [
@@ -200,7 +200,7 @@ function NetworkConfigPanel({ onBuild }) {
         </button>
 
         <p className="text-[9px] font-mono text-zinc-700 text-center">
-          Data: UCDP GED · UCDP Non-State · all years {DEFAULT_YEAR_MIN}–{DEFAULT_YEAR_MAX}
+          Data: UCDP GED · UCDP Non-State · {DEFAULT_YEAR_MIN}–{DEFAULT_YEAR_MAX}
         </p>
 
       </div>

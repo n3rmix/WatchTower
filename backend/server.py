@@ -1715,7 +1715,7 @@ async def _do_build_actor_network_cache() -> Optional[Dict]:
                 ged_tasks = [
                     _fetch_ucdp_all_pages(
                         session, f"gedevents/{UCDP_VERSION}", hdrs,
-                        {"Country": gw, "StartDate": "2018-01-01"},
+                        {"Country": gw, "StartDate": "2020-01-01"},
                     )
                     for gw in all_gw_codes
                 ]
