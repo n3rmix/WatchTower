@@ -1,6 +1,10 @@
 import { Globe, RefreshCw, Database, AlertTriangle, Map, Network, Activity, Hash } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import { Button } from "./ui/button";
+import React, { useState, useEffect } from "react";
+import axios from "axios";
+
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 
 /** Format an ISO string or Date as "DD MMM YYYY HH:MM UTC" */
 function formatTimestamp(ts) {
@@ -18,8 +22,60 @@ function isStale(ts) {
   return Date.now() - d.getTime() > 2 * 60 * 60 * 1000;
 }
 
+/** Format seconds as MM:SS */
+function fmtCountdown(secs) {
+  if (secs <= 0) return "now";
+  const m = Math.floor(secs / 60);
+  const s = secs % 60;
+  return `${m}m ${String(s).padStart(2, "0")}s`;
+}
+
 const Header = ({ dataLastFetch, sourcesUsed = [], nextFetchIn, onRefresh }) => {
-  const stale = isStale(dataLastFetch);
+  const [internal, setInternal] = useState({ fetchedAt: null, sources: [], nextFetchTime: null });
+  const [countdown, setCountdown] = useState(null);
+
+  // Self-fetch /api/last-update on mount and every hour
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const res = await axios.get(`${BACKEND_URL}/api/last-update`);
+        const d = res.data;
+        const fetchedAt = d.fetched_at ? new Date(d.fetched_at) : null;
+        const nextFetchTime = fetchedAt ? new Date(fetchedAt.getTime() + 60 * 60 * 1000) : null;
+        setInternal({
+          fetchedAt,
+          sources: d.sources || [],
+          nextFetchTime,
+        });
+      } catch {
+        // non-fatal
+      }
+    };
+    load();
+    const id = setInterval(load, 3_600_000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Live countdown ticker
+  useEffect(() => {
+    const tick = () => {
+      const target = internal.nextFetchTime;
+      if (!target) { setCountdown(null); return; }
+      const secs = Math.max(0, Math.round((target - Date.now()) / 1000));
+      setCountdown(secs);
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [internal.nextFetchTime]);
+
+  // Prefer passed props (Dashboard), fall back to self-fetched data
+  const resolvedFetch = dataLastFetch ?? internal.fetchedAt;
+  const resolvedSources = sourcesUsed.length > 0 ? sourcesUsed : internal.sources;
+  // nextFetchIn prop is in minutes; convert to seconds for display
+  const resolvedCountdown = nextFetchIn != null ? nextFetchIn * 60 : countdown;
+
+  const stale = isStale(resolvedFetch);
 
   return (
     <header className="border-b border-zinc-800 bg-zinc-950/50 backdrop-blur-sm sticky top-0 z-50" data-testid="dashboard-header">
@@ -139,22 +195,22 @@ const Header = ({ dataLastFetch, sourcesUsed = [], nextFetchIn, onRefresh }) => 
                   Sources updated
                 </p>
                 <p className="text-xs text-zinc-300 font-mono font-semibold" data-testid="source-update-time">
-                  {formatTimestamp(dataLastFetch)}
+                  {formatTimestamp(resolvedFetch)}
                 </p>
-                {sourcesUsed.length > 0 && (
+                {resolvedSources.length > 0 && (
                   <p className="text-xs text-zinc-600 font-mono">
-                    {sourcesUsed.join(" · ")}
+                    {resolvedSources.join(" · ")}
                   </p>
                 )}
-                {nextFetchIn !== null && (
+                {resolvedCountdown != null && (
                   <p className="text-xs text-zinc-600 font-mono">
-                    next in {nextFetchIn} min
+                    next in {fmtCountdown(resolvedCountdown)}
                   </p>
                 )}
               </div>
 
               {/* Stale-data warning */}
-              {stale && (
+              {resolvedFetch && stale && (
                 <p className="flex items-center justify-end gap-1 text-xs font-mono text-amber-500 bg-amber-950/30 border border-amber-800/40 px-2 py-0.5 rounded-sm mt-1" data-testid="stale-warning">
                   <AlertTriangle className="w-3 h-3" />
                   Data may be stale
