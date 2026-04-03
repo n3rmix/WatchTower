@@ -1,5 +1,8 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import axios from 'axios';
 import Header from '../components/Header';
+
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 
 // ─── BASELINE DATA (ported from conflict-counter/data.js) ─────────────────────
 // Cumulative deaths anchored at April 1, 2026. Sources: ACLED, UCDP, UN, OCHA.
@@ -260,13 +263,24 @@ async function loadConflictData() {
   const totalChildDeaths = conflicts.reduce((s, c) => s + c.currentChildDeaths, 0);
   const childDailyRateTotal = BASELINE_CONFLICTS.reduce((s, c) => s + (c.childDailyRate || 0), 0);
 
+  // Fetch backend last-update timestamp
+  let sourcesUpdatedAt = null;
+  try {
+    const res = await axios.get(`${BACKEND_URL}/api/last-update`);
+    if (res.data?.fetched_at) {
+      sourcesUpdatedAt = new Date(res.data.fetched_at);
+    }
+  } catch {
+    // non-fatal — counter still works from baselines
+  }
+
   return {
     conflicts,
     totalDeaths,
     totalChildDeaths,
     childDailyRateTotal,
     ytdDeaths: estimateYTDDeaths(),
-    lastUpdated: new Date(),
+    sourcesUpdatedAt,
   };
 }
 
@@ -409,7 +423,7 @@ function ChildrenBreakdown({ conflicts }) {
 export default function CounterPage() {
   const [data, setData] = useState(null);
   const [status, setStatus] = useState('loading'); // 'loading' | 'live' | 'cached'
-  const [lastUpdated, setLastUpdated] = useState(null);
+  const [sourcesUpdatedAt, setSourcesUpdatedAt] = useState(null);
 
   // Refs for direct DOM counter updates (avoids re-render on every RAF tick)
   const mainCounterRef = useRef(null);
@@ -439,7 +453,7 @@ export default function CounterPage() {
       const prevChildTotal = tickRef.current?.childTotal ?? 0;
 
       setData(d);
-      setLastUpdated(d.lastUpdated);
+      if (d.sourcesUpdatedAt) setSourcesUpdatedAt(d.sourcesUpdatedAt);
       setStatus('live');
 
       // Sync tick ref
@@ -460,10 +474,10 @@ export default function CounterPage() {
     }
   }, [animateCounter]);
 
-  // ── Mount: initial fetch + 60s refresh ────────────────────────────────────
+  // ── Mount: initial fetch + 1h refresh ─────────────────────────────────────
   useEffect(() => {
     fetchAndRender();
-    const id = setInterval(fetchAndRender, 60_000);
+    const id = setInterval(fetchAndRender, 3_600_000);
     return () => clearInterval(id);
   }, [fetchAndRender]);
 
@@ -542,9 +556,18 @@ export default function CounterPage() {
               {data ? fmt(data.totalDeaths) : '—'}
             </div>
             <p className="text-[10px] font-mono text-zinc-600">
-              {lastUpdated
-                ? `Last updated: ${timeAgo(lastUpdated)} · Data: ACLED, UCDP, UN`
-                : 'Loading…'}
+              {sourcesUpdatedAt ? (
+                <>
+                  <span className="text-zinc-700 uppercase tracking-wider">Sources updated </span>
+                  {sourcesUpdatedAt.toLocaleString('en-GB', {
+                    day: 'numeric', month: 'short', year: 'numeric',
+                    hour: '2-digit', minute: '2-digit', timeZoneName: 'short',
+                  })}
+                  <span className="text-zinc-800"> · ACLED · UCDP · UN</span>
+                </>
+              ) : (
+                'Loading…'
+              )}
             </p>
           </section>
 
