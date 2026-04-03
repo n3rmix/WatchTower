@@ -11,11 +11,11 @@ function App() {
     <div className="App dark">
       <BrowserRouter>
         <Routes>
-          <Route path="/" element={<Dashboard />} />
+          <Route path="/" element={<CounterPage />} />
+          <Route path="/analytics" element={<Dashboard />} />
           <Route path="/human-cost" element={<HumanCostPage />} />
           <Route path="/actor-network" element={<ActorNetworkPage />} />
           <Route path="/life-trajectory" element={<LifeTrajectoryPage />} />
-          <Route path="/counter" element={<CounterPage />} />
         </Routes>
       </BrowserRouter>
     </div>
