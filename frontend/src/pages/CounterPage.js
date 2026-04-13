@@ -297,17 +297,24 @@ async function loadConflictData() {
     if (lu?.fetched_at) sourcesUpdatedAt = new Date(lu.fetched_at);
     const snapDate = sourcesUpdatedAt || BASELINE_DATE;
 
-    // Override baseCumulative + childDeaths for API-matched conflicts,
-    // using the API fetch timestamp as the interpolation anchor.
+    // Override baseCumulative + childDeaths for API-matched conflicts only when
+    // the API figure is higher than the hardcoded estimate projected to snapDate.
+    // This ensures the Counter never regresses when the API uses a more
+    // conservative methodology (e.g. Sudan: API 70k vs Counter 150k).
     mergedBaselines = mergedBaselines.map(c => {
       const apiCountry = API_COUNTRY_MAP[c.id];
       if (!apiCountry) return c;
       const api = apiConflicts.find(a => a.country === apiCountry);
       if (!api) return c;
+
+      const daysSinceBaseline = Math.max(0, (snapDate - BASELINE_DATE) / 86400000);
+      const projectedHardcoded = c.baseCumulative + Math.floor(daysSinceBaseline * c.dailyRate);
+      if (api.total_deaths <= projectedHardcoded) return c; // keep hardcoded — it's higher
+
       return {
         ...c,
         baseCumulative: api.total_deaths,
-        childDeaths: api.children_deaths ?? c.childDeaths,
+        childDeaths: Math.max(api.children_deaths ?? 0, c.childDeaths ?? 0),
         snapDate,
       };
     });
