@@ -250,13 +250,28 @@ const BASELINE_CONFLICTS = [
 // ─── DATA LOGIC ───────────────────────────────────────────────────────────────
 const BASELINE_DATE = new Date('2026-04-01T00:00:00Z');
 
+// Maps Counter conflict IDs to backend API country names.
+// Conflicts not listed here (Nigeria, Somalia, Mexico, Iran variants) stay hardcoded.
+const API_COUNTRY_MAP = {
+  'ukraine':  'Ukraine',
+  'sudan':    'Sudan',
+  'gaza':     'Gaza/Palestine',
+  'myanmar':  'Myanmar',
+  'syria':    'Syria',
+  'haiti':    'Haiti',
+  'ethiopia': 'Ethiopia',
+  'lebanon':  'Lebanon',
+};
+
 function estimateCurrentDeaths(conflict) {
-  const daysElapsed = (Date.now() - BASELINE_DATE) / 86400000;
+  const base = conflict.snapDate || BASELINE_DATE;
+  const daysElapsed = (Date.now() - base) / 86400000;
   return conflict.baseCumulative + Math.max(0, Math.floor(daysElapsed * conflict.dailyRate));
 }
 
 function estimateCurrentChildDeaths(conflict) {
-  const daysElapsed = Math.max(0, (Date.now() - BASELINE_DATE) / 86400000);
+  const base = conflict.snapDate || BASELINE_DATE;
+  const daysElapsed = Math.max(0, (Date.now() - base) / 86400000);
   return (conflict.childDeaths || 0) + Math.floor(daysElapsed * (conflict.childDailyRate || 0));
 }
 
@@ -267,7 +282,40 @@ function estimateYTDDeaths() {
 }
 
 async function loadConflictData() {
-  const conflicts = BASELINE_CONFLICTS.map(c => ({
+  // Start with hardcoded baselines as fallback
+  let mergedBaselines = BASELINE_CONFLICTS.map(c => ({ ...c }));
+  let sourcesUpdatedAt = null;
+
+  try {
+    const [conflictsRes, lastUpdateRes] = await Promise.all([
+      axios.get(`${BACKEND_URL}/api/conflicts`),
+      axios.get(`${BACKEND_URL}/api/last-update`),
+    ]);
+
+    const apiConflicts = conflictsRes.data;
+    const lu = lastUpdateRes.data;
+    if (lu?.fetched_at) sourcesUpdatedAt = new Date(lu.fetched_at);
+    const snapDate = sourcesUpdatedAt || BASELINE_DATE;
+
+    // Override baseCumulative + childDeaths for API-matched conflicts,
+    // using the API fetch timestamp as the interpolation anchor.
+    mergedBaselines = mergedBaselines.map(c => {
+      const apiCountry = API_COUNTRY_MAP[c.id];
+      if (!apiCountry) return c;
+      const api = apiConflicts.find(a => a.country === apiCountry);
+      if (!api) return c;
+      return {
+        ...c,
+        baseCumulative: api.total_deaths,
+        childDeaths: api.children_deaths ?? c.childDeaths,
+        snapDate,
+      };
+    });
+  } catch {
+    // Non-fatal: counter still works from hardcoded baselines
+  }
+
+  const conflicts = mergedBaselines.map(c => ({
     ...c,
     currentDeaths: estimateCurrentDeaths(c),
     currentChildDeaths: estimateCurrentChildDeaths(c),
@@ -278,18 +326,7 @@ async function loadConflictData() {
 
   const totalDeaths = conflicts.reduce((s, c) => s + c.currentDeaths, 0);
   const totalChildDeaths = conflicts.reduce((s, c) => s + c.currentChildDeaths, 0);
-  const childDailyRateTotal = BASELINE_CONFLICTS.reduce((s, c) => s + (c.childDailyRate || 0), 0);
-
-  // Fetch backend last-update timestamp
-  let sourcesUpdatedAt = null;
-  try {
-    const res = await axios.get(`${BACKEND_URL}/api/last-update`);
-    if (res.data?.fetched_at) {
-      sourcesUpdatedAt = new Date(res.data.fetched_at);
-    }
-  } catch {
-    // non-fatal — counter still works from baselines
-  }
+  const childDailyRateTotal = mergedBaselines.reduce((s, c) => s + (c.childDailyRate || 0), 0);
 
   return {
     conflicts,
