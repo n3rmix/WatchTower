@@ -1,5 +1,4 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
-import Dashboard from "./pages/Dashboard";
 import HumanCostPage from "./pages/HumanCostPage";
 import ActorNetworkPage from "./pages/ActorNetworkPage";
 import LifeTrajectoryPage from "./pages/LifeTrajectoryPage";
@@ -12,7 +11,6 @@ function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/" element={<CounterPage />} />
-          <Route path="/analytics" element={<Dashboard />} />
           <Route path="/human-cost" element={<HumanCostPage />} />
           <Route path="/actor-network" element={<ActorNetworkPage />} />
           <Route path="/life-trajectory" element={<LifeTrajectoryPage />} />

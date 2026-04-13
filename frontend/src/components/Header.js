@@ -132,19 +132,6 @@ const Header = ({ dataLastFetch, sourcesUsed = [], nextFetchIn, onRefresh }) => 
               Counter
             </NavLink>
             <NavLink
-              to="/analytics"
-              className={({ isActive }) =>
-                `flex items-center gap-1.5 px-3 py-1 rounded-sm text-xs font-mono uppercase tracking-wider transition-colors border ${
-                  isActive
-                    ? "bg-zinc-800 border-zinc-700 text-white"
-                    : "border-transparent text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900"
-                }`
-              }
-            >
-              <Globe className="w-3.5 h-3.5" />
-              Analytics
-            </NavLink>
-            <NavLink
               to="/human-cost"
               className={({ isActive }) =>
                 `flex items-center gap-1.5 px-3 py-1 rounded-sm text-xs font-mono uppercase tracking-wider transition-colors border ${

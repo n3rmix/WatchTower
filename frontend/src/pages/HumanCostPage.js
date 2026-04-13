@@ -250,7 +250,7 @@ const HumanCostPage = () => {
               className="flex items-center gap-1.5 text-zinc-400 hover:text-white transition-colors text-sm font-mono"
             >
               <ArrowLeft className="w-4 h-4" />
-              Dashboard
+              Home
             </button>
             <ChevronRight className="w-3 h-3 text-zinc-700" />
             <Globe className="w-4 h-4 text-red-500" />
