@@ -16,6 +16,7 @@ const SHORT = {
   "Ethiopia":       "ETH",
   "DRC (Congo)":    "DRC",
   "Iran":           "IRN",
+  "Lebanon":        "LBN",
 };
 
 function norm(value, max) {

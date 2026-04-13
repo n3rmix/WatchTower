@@ -11,6 +11,7 @@ const BASE_MARKERS = [
   { location: [9.0,  40.0],  size: 0.07 }, // Ethiopia
   { location: [-4.0, 21.5],  size: 0.07 }, // DRC (Congo)
   { location: [32.0, 53.0],  size: 0.07 }, // Iran
+  { location: [33.9, 35.5],  size: 0.07 }, // Lebanon
 ];
 
 const ConflictGlobe = () => {
