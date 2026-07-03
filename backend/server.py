@@ -2233,7 +2233,7 @@ _gdelt_cache_ts: Optional[datetime] = None
 # acquire this lock before sending any request to api.gdeltproject.org.
 _gdelt_rate_lock: asyncio.Lock = asyncio.Lock()
 _gdelt_last_request_ts: Optional[float] = None  # monotonic seconds
-_GDELT_MIN_INTERVAL: float = 6.0
+_GDELT_MIN_INTERVAL: float = 12.0   # GDELT enforces ~10s in practice; 12s gives margin
 
 
 async def _gdelt_fetch_mode(
@@ -2299,9 +2299,10 @@ def _parse_gdelt_timeline(volume_json: Optional[Dict], tone_json: Optional[Dict]
     Both `timelinevolraw` and `timelinetone` return `{"timeline": [{"data": [{"date","value"}]}]}`.
     Dates in DOC 2.0 come as `YYYYMMDDTHHMMSSZ`; we normalise to `YYYY-MM-DD`.
     """
-    def _extract(js: Optional[Dict]) -> Dict[str, float]:
+    def _extract(js: Optional[Dict]):
+        """Return (values_by_day, counts_by_day) or ({}, {}) if no data."""
         if not js or "timeline" not in js or not js["timeline"]:
-            return {}
+            return {}, {}
         series = js["timeline"][0].get("data", [])
         # GDELT returns hourly buckets for short timespans (< 30d) and daily
         # buckets for longer spans.  We always aggregate to daily by summing
