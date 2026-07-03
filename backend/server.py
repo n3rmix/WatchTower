@@ -2228,6 +2228,13 @@ GDELT_QUERY_MAP: Dict[str, str] = {
 _gdelt_cache: Dict[str, Dict] = {}   # country -> {volume, tone, dates, latest_*, ...}
 _gdelt_cache_ts: Optional[datetime] = None
 
+# Global rate-limiter for GDELT DOC 2.0.  The API enforces "one request every
+# 5 seconds"; a 6-second gap gives a comfortable margin.  All callers must
+# acquire this lock before sending any request to api.gdeltproject.org.
+_gdelt_rate_lock: asyncio.Lock = asyncio.Lock()
+_gdelt_last_request_ts: Optional[float] = None  # monotonic seconds
+_GDELT_MIN_INTERVAL: float = 6.0
+
 
 async def _gdelt_fetch_mode(
     session: aiohttp.ClientSession,
@@ -2237,34 +2244,53 @@ async def _gdelt_fetch_mode(
 ) -> Optional[Dict]:
     """Call the GDELT DOC 2.0 API for a single mode and return parsed JSON.
 
-    GDELT accepts requests without authentication but throttles aggressively;
-    a 15 second timeout is used and non-200s are logged and swallowed.
+    Enforces the GDELT rate-limit of one request every 5 seconds by acquiring
+    a global asyncio.Lock and sleeping until the minimum interval has elapsed.
+    Non-200 and non-JSON responses are logged and return None (never raise).
     """
+    global _gdelt_last_request_ts
+
     params = {
         "query":    query,
         "mode":     mode,
         "timespan": timespan,
         "format":   "json",
     }
-    try:
-        async with session.get(
-            GDELT_DOC_API,
-            params=params,
-            timeout=aiohttp.ClientTimeout(total=15),
-        ) as resp:
-            if resp.status != 200:
-                logger.warning(f"GDELT {mode} HTTP {resp.status} for query={query!r}")
-                return None
-            # GDELT sometimes returns text/html on rate-limit — guard the parse.
-            text = await resp.text()
-            try:
-                return json.loads(text)
-            except json.JSONDecodeError:
-                logger.warning(f"GDELT {mode} returned non-JSON body for query={query!r}")
-                return None
-    except Exception as exc:
-        logger.warning(f"GDELT {mode} error for query={query!r}: {exc}")
-        return None
+
+    async with _gdelt_rate_lock:
+        # Sleep if the minimum interval since the last request hasn't elapsed.
+        if _gdelt_last_request_ts is not None:
+            elapsed = asyncio.get_event_loop().time() - _gdelt_last_request_ts
+            gap = _GDELT_MIN_INTERVAL - elapsed
+            if gap > 0:
+                await asyncio.sleep(gap)
+        _gdelt_last_request_ts = asyncio.get_event_loop().time()
+
+        try:
+            async with session.get(
+                GDELT_DOC_API,
+                params=params,
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                if resp.status == 429:
+                    logger.warning(f"GDELT rate-limited (429) for mode={mode} query={query!r}")
+                    return None
+                if resp.status != 200:
+                    logger.warning(f"GDELT {mode} HTTP {resp.status} for query={query!r}")
+                    return None
+                text = await resp.text()
+                # GDELT returns a plain-text rate-limit message on 200 when throttled.
+                if not text.strip().startswith("{"):
+                    logger.warning(f"GDELT {mode} returned non-JSON for query={query!r}: {text[:80]!r}")
+                    return None
+                try:
+                    return json.loads(text)
+                except json.JSONDecodeError:
+                    logger.warning(f"GDELT {mode} JSON parse error for query={query!r}")
+                    return None
+        except Exception as exc:
+            logger.warning(f"GDELT {mode} error for query={query!r}: {exc}")
+            return None
 
 
 def _parse_gdelt_timeline(volume_json: Optional[Dict], tone_json: Optional[Dict]) -> Dict:
@@ -2277,24 +2303,36 @@ def _parse_gdelt_timeline(volume_json: Optional[Dict], tone_json: Optional[Dict]
         if not js or "timeline" not in js or not js["timeline"]:
             return {}
         series = js["timeline"][0].get("data", [])
-        out: Dict[str, float] = {}
+        # GDELT returns hourly buckets for short timespans (< 30d) and daily
+        # buckets for longer spans.  We always aggregate to daily by summing
+        # volume and averaging tone across intra-day buckets.
+        counts: Dict[str, int]   = {}   # day → number of hourly buckets (for tone avg)
+        out:    Dict[str, float] = {}
         for pt in series:
             raw = pt.get("date", "")
             try:
-                # Normalise to date-only bucket
                 day = f"{raw[0:4]}-{raw[4:6]}-{raw[6:8]}"
-                out[day] = float(pt.get("value") or 0)
+                val = float(pt.get("value") or 0)
+                out[day]    = out.get(day, 0.0) + val
+                counts[day] = counts.get(day, 0) + 1
             except Exception:
                 continue
-        return out
+        return out, counts
 
-    volume_by_day = _extract(volume_json)
-    tone_by_day   = _extract(tone_json)
-    dates = sorted(set(volume_by_day) | set(tone_by_day))
+    vol_raw, vol_counts   = _extract(volume_json)
+    tone_raw, tone_counts = _extract(tone_json)
+
+    # For tone, compute the daily average rather than summing.
+    tone_by_day: Dict[str, float] = {
+        d: round(v / tone_counts[d], 4) if tone_counts.get(d, 0) > 0 else v
+        for d, v in tone_raw.items()
+    }
+
+    dates = sorted(set(vol_raw) | set(tone_by_day))
     return {
         "dates":  dates,
-        "volume": [volume_by_day.get(d, 0.0) for d in dates],
-        "tone":   [tone_by_day.get(d,   0.0) for d in dates],
+        "volume": [vol_raw.get(d, 0.0)      for d in dates],
+        "tone":   [tone_by_day.get(d, 0.0)  for d in dates],
     }
 
 
@@ -2310,10 +2348,10 @@ async def fetch_gdelt_data() -> Dict[str, Dict]:
 
     async with aiohttp.ClientSession(headers={"User-Agent": "WatchTower/1.0"}) as session:
         for country, query in GDELT_QUERY_MAP.items():
-            vol_json, tone_json = await asyncio.gather(
-                _gdelt_fetch_mode(session, query, "timelinevolraw"),
-                _gdelt_fetch_mode(session, query, "timelinetone"),
-            )
+            # Sequential fetch (not asyncio.gather) so each request respects the
+            # global rate-lock — GDELT enforces one request per 5 seconds.
+            vol_json  = await _gdelt_fetch_mode(session, query, "timelinevolraw")
+            tone_json = await _gdelt_fetch_mode(session, query, "timelinetone")
             parsed = _parse_gdelt_timeline(vol_json, tone_json)
 
             # Aggregate helpers used by the frontend widgets
@@ -2431,6 +2469,388 @@ async def get_live_events():
     }
 
 
+# ─── GDELT extended endpoints ─────────────────────────────────────────────────
+#
+# Four additional GDELT-backed endpoints added after the initial live-events /
+# gdelt-timeline pair.  All read from the in-memory `_gdelt_cache` (populated
+# hourly) and / or make secondary GDELT DOC 2.0 calls with their own short TTL
+# caches.  Source-separation rule applies: GDELT data NEVER enters MongoDB.
+
+# ── #1 Forgotten Crises ───────────────────────────────────────────────────────
+
+@api_router.get("/forgotten-crises")
+async def get_forgotten_crises():
+    """Return a ranked list of conflicts sorted by attention-gap ratio.
+
+    attention_ratio = avg_volume_7d / (total_deaths_per_1k)
+
+    A *low* ratio means many deaths but little media coverage — i.e. an
+    under-reported crisis.  The endpoint reads from the existing
+    `_gdelt_cache` (media attention) and the `conflicts` MongoDB collection
+    (casualty totals) so no additional GDELT calls are required.
+    """
+    if not _gdelt_cache:
+        try:
+            await fetch_gdelt_data()
+        except Exception as exc:
+            logger.warning(f"GDELT inline fetch failed: {exc}")
+
+    # Pull casualty totals from MongoDB
+    try:
+        db_conflicts = await db.conflicts.find(
+            {"status": "active"},
+            {"country": 1, "total_deaths": 1},
+        ).to_list(length=50)
+    except Exception as exc:
+        logger.warning(f"MongoDB fetch for forgotten-crises failed: {exc}")
+        db_conflicts = []
+
+    deaths_by_country: Dict[str, int] = {
+        c["country"]: int(c.get("total_deaths", 0) or 0)
+        for c in db_conflicts
+    }
+
+    rows = []
+    for country, gdelt in _gdelt_cache.items():
+        deaths = deaths_by_country.get(country, 0)
+        if deaths <= 0:
+            continue
+        vol7 = gdelt.get("avg_volume_7d", 0.0) or 0.0
+        # deaths_per_1k = deaths / 1000.  Ratio = vol / deaths_per_1k.
+        # Lower ratio = more forgotten.
+        deaths_per_k = deaths / 1000.0
+        attention_ratio = round(vol7 / deaths_per_k, 4) if deaths_per_k else None
+        rows.append({
+            "country":          country,
+            "total_deaths":     deaths,
+            "avg_volume_7d":    round(vol7, 4),
+            "attention_ratio":  attention_ratio,
+            "volume_delta_pct": gdelt.get("volume_delta_pct"),
+            "avg_tone_7d":      gdelt.get("avg_tone_7d"),
+        })
+
+    # Sort ascending by attention_ratio (most under-reported first)
+    rows.sort(key=lambda r: (r["attention_ratio"] is None, r["attention_ratio"] or 0))
+
+    return {
+        "fetched_at": _gdelt_cache_ts.isoformat() if _gdelt_cache_ts else None,
+        "source":     "GDELT DOC 2.0 + UCDP/ACLED",
+        "conflicts":  rows,
+    }
+
+
+# ── #7 GDELT Alert Ticker ─────────────────────────────────────────────────────
+
+# Short-lived cache — refreshed every 15 minutes via the 15-min scheduler job
+# added in startup_event below.  Structure: list of article dicts.
+_gdelt_alerts_cache: List[Dict] = []
+_gdelt_alerts_cache_ts: Optional[datetime] = None
+_ALERTS_CACHE_TTL_MINUTES = 15
+
+
+async def fetch_gdelt_alerts() -> List[Dict]:
+    """Fetch the most-negative articles across all tracked conflicts.
+
+    Uses GDELT DOC 2.0 `mode=artlist` with tone threshold filtering.
+    Returns up to 40 articles sorted by tone ascending (most negative first).
+    Results are cached in _gdelt_alerts_cache for 15 minutes.
+    """
+    global _gdelt_alerts_cache, _gdelt_alerts_cache_ts
+
+    # Combined query across all tracked conflicts
+    combined_query = " OR ".join(
+        f"({q})" for q in GDELT_QUERY_MAP.values()
+    )
+    # Restrict to strongly negative articles (tone < -5 in GDELT scale)
+    # GDELT artlist mode doesn't support a direct tone filter in the query string,
+    # so we fetch the most recent 7-day articles and filter by tone on our side.
+    params = {
+        "query":    combined_query,
+        "mode":     "artlist",
+        "timespan": "3d",    # Last 3 days — keeps the list fresh
+        "maxrecords": "75",
+        "format":   "json",
+    }
+
+    articles: List[Dict] = []
+    try:
+        async with aiohttp.ClientSession(headers={"User-Agent": "WatchTower/1.0"}) as session:
+            async with session.get(
+                GDELT_DOC_API,
+                params=params,
+                timeout=aiohttp.ClientTimeout(total=20),
+            ) as resp:
+                if resp.status != 200:
+                    logger.warning(f"GDELT artlist HTTP {resp.status}")
+                    return _gdelt_alerts_cache  # return stale on error
+                text = await resp.text()
+                try:
+                    data = json.loads(text)
+                except json.JSONDecodeError:
+                    logger.warning("GDELT artlist returned non-JSON")
+                    return _gdelt_alerts_cache
+
+        raw_articles = data.get("articles", [])
+        for art in raw_articles:
+            tone = art.get("tone")
+            try:
+                tone_val = float(tone) if tone is not None else 0.0
+            except (ValueError, TypeError):
+                tone_val = 0.0
+            # Filter: only strongly negative articles (tone <= -4)
+            if tone_val > -4.0:
+                continue
+            articles.append({
+                "title":       art.get("title", "").strip(),
+                "url":         art.get("url", ""),
+                "source":      art.get("domain", art.get("seendate", "")),
+                "seendate":    art.get("seendate", ""),
+                "tone":        round(tone_val, 2),
+                "language":    art.get("language", "English"),
+            })
+
+        # Sort most-negative first
+        articles.sort(key=lambda a: a["tone"])
+        articles = articles[:40]
+
+    except Exception as exc:
+        logger.warning(f"GDELT alerts fetch error: {exc}")
+        return _gdelt_alerts_cache  # return stale cache on error
+
+    _gdelt_alerts_cache = articles
+    _gdelt_alerts_cache_ts = datetime.now(timezone.utc)
+    logger.info(f"GDELT alerts cache updated: {len(articles)} articles")
+    return articles
+
+
+@api_router.get("/gdelt-alerts")
+async def get_gdelt_alerts():
+    """Return the most-negative recent articles across all tracked conflicts.
+
+    Served from a 15-minute in-memory cache populated by a dedicated scheduler
+    job.  On cache miss (backend restart) the fetch runs inline.
+    """
+    now = datetime.now(timezone.utc)
+    cache_stale = (
+        not _gdelt_alerts_cache_ts
+        or (now - _gdelt_alerts_cache_ts).total_seconds() > _ALERTS_CACHE_TTL_MINUTES * 60
+    )
+    if cache_stale or not _gdelt_alerts_cache:
+        try:
+            await fetch_gdelt_alerts()
+        except Exception as exc:
+            logger.warning(f"GDELT alerts inline fetch failed: {exc}")
+
+    return {
+        "fetched_at": _gdelt_alerts_cache_ts.isoformat() if _gdelt_alerts_cache_ts else None,
+        "source":     "GDELT DOC 2.0",
+        "articles":   _gdelt_alerts_cache,
+    }
+
+
+# ── #2 Humanitarian Theme Radar ───────────────────────────────────────────────
+
+# Short per-country theme cache.  Populated on demand (not in the hourly
+# scheduler) because theme queries are slow and per-country.
+_gdelt_themes_cache: Dict[str, Dict] = {}   # country -> {themes: {name: [values]}, ...}
+_gdelt_themes_cache_ts: Dict[str, datetime] = {}
+_THEMES_CACHE_TTL_HOURS = 6
+
+# Humanitarian theme tags to track in GDELT GKG (DOC 2.0 timelinetheme mode).
+# These are GDELT GKG 2.0 theme codes used in the `mode=timelinetheme` queries.
+HUMANITARIAN_THEMES = [
+    "KILL",
+    "WOUND",
+    "REFUGEES",
+    "FAMINE",
+    "HOSPITAL",
+    "HUMANITARIAN",
+    "CEASEFIRE",
+    "PEACE",
+]
+
+
+async def fetch_gdelt_themes_for_country(country: str) -> Dict:
+    """Fetch GDELT DOC 2.0 theme timelines for a single conflict country.
+
+    Returns {theme_name: {dates: [...], values: [...]}} for the last 30 days.
+    Cached per-country for 6 hours.
+    """
+    query = GDELT_QUERY_MAP.get(country)
+    if not query:
+        raise HTTPException(status_code=404, detail=f"No GDELT query mapping for country={country!r}")
+
+    theme_timelines: Dict[str, Dict] = {}
+    async with aiohttp.ClientSession(headers={"User-Agent": "WatchTower/1.0"}) as session:
+        for theme in HUMANITARIAN_THEMES:
+            theme_query = f"{query} theme:{theme}"
+            data = await _gdelt_fetch_mode(session, theme_query, "timelinevolraw", timespan="30d")
+            if data and "timeline" in data and data["timeline"]:
+                series = data["timeline"][0].get("data", [])
+                dates, values = [], []
+                for pt in series:
+                    raw = pt.get("date", "")
+                    try:
+                        day = f"{raw[0:4]}-{raw[4:6]}-{raw[6:8]}"
+                        dates.append(day)
+                        values.append(round(float(pt.get("value") or 0), 4))
+                    except Exception:
+                        continue
+                if any(v > 0 for v in values):
+                    theme_timelines[theme] = {"dates": dates, "values": values}
+
+    # Derive a single "latest 7-day average" per theme for the radar chart
+    radar_values: Dict[str, float] = {}
+    for theme, tl in theme_timelines.items():
+        vals = tl["values"]
+        last7 = vals[-7:] if len(vals) >= 7 else vals
+        radar_values[theme] = round(sum(last7) / len(last7), 4) if last7 else 0.0
+
+    return {
+        "country":       country,
+        "timelines":     theme_timelines,
+        "radar_values":  radar_values,
+        "themes":        HUMANITARIAN_THEMES,
+    }
+
+
+@api_router.get("/gdelt-themes")
+async def get_gdelt_themes(country: str = "Ukraine"):
+    """Return GDELT humanitarian-theme timelines for a single conflict country.
+
+    Supported themes: KILL, WOUND, REFUGEES, FAMINE, HOSPITAL, HUMANITARIAN,
+    CEASEFIRE, PEACE.  Served from a per-country 6-hour cache.
+    """
+    now = datetime.now(timezone.utc)
+    cache_ts = _gdelt_themes_cache_ts.get(country)
+    cache_stale = (
+        cache_ts is None
+        or (now - cache_ts).total_seconds() > _THEMES_CACHE_TTL_HOURS * 3600
+    )
+    if cache_stale or country not in _gdelt_themes_cache:
+        try:
+            result = await fetch_gdelt_themes_for_country(country)
+            _gdelt_themes_cache[country] = result
+            _gdelt_themes_cache_ts[country] = now
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.warning(f"GDELT themes fetch failed for {country}: {exc}")
+            if country not in _gdelt_themes_cache:
+                raise HTTPException(status_code=503, detail="GDELT themes unavailable")
+
+    payload = _gdelt_themes_cache[country]
+    return {
+        "fetched_at": _gdelt_themes_cache_ts.get(country, now).isoformat(),
+        "source":     "GDELT DOC 2.0",
+        **payload,
+    }
+
+
+# ── #5 Diplomatic-Pulse Panel ─────────────────────────────────────────────────
+
+_gdelt_diplomacy_cache: Dict[str, Dict] = {}   # country -> payload
+_gdelt_diplomacy_cache_ts: Dict[str, datetime] = {}
+_DIPLOMACY_CACHE_TTL_HOURS = 6
+
+# Theme proxies for diplomacy vs violence in GDELT DOC 2.0 GKG
+DIPLOMACY_THEMES  = ["PEACE", "CEASEFIRE", "NEGOTIATION", "DIPLOMACY"]
+VIOLENCE_THEMES   = ["KILL", "WOUND", "MILITARY_STRIKE", "ATTACK"]
+
+
+async def fetch_gdelt_diplomacy_for_country(country: str) -> Dict:
+    """Fetch diplomacy-vs-violence theme timelines for a single conflict country.
+
+    Returns 30-day daily series for both theme clusters plus derived pulse index:
+      pulse_index = diplomacy_avg_7d / (diplomacy_avg_7d + violence_avg_7d)
+    0 = pure violence, 1 = pure diplomacy; 0.5 = balanced.
+    """
+    query = GDELT_QUERY_MAP.get(country)
+    if not query:
+        raise HTTPException(status_code=404, detail=f"No GDELT query mapping for country={country!r}")
+
+    async def _fetch_theme_group(themes: List[str]) -> Dict:
+        """Fetch and sum multiple theme timelines into a single daily series."""
+        combined: Dict[str, float] = {}
+        async with aiohttp.ClientSession(headers={"User-Agent": "WatchTower/1.0"}) as s:
+            for theme in themes:
+                theme_query = f"{query} theme:{theme}"
+                data = await _gdelt_fetch_mode(s, theme_query, "timelinevolraw", timespan="30d")
+                if data and "timeline" in data and data["timeline"]:
+                    for pt in data["timeline"][0].get("data", []):
+                        raw = pt.get("date", "")
+                        try:
+                            day = f"{raw[0:4]}-{raw[4:6]}-{raw[6:8]}"
+                            combined[day] = combined.get(day, 0.0) + float(pt.get("value") or 0)
+                        except Exception:
+                            continue
+        return combined
+
+    dipl_series, viol_series = await asyncio.gather(
+        _fetch_theme_group(DIPLOMACY_THEMES),
+        _fetch_theme_group(VIOLENCE_THEMES),
+    )
+
+    all_dates = sorted(set(dipl_series) | set(viol_series))
+    dipl_vals = [round(dipl_series.get(d, 0.0), 4) for d in all_dates]
+    viol_vals = [round(viol_series.get(d, 0.0), 4) for d in all_dates]
+
+    # 7-day averages
+    last7_dipl = dipl_vals[-7:] if len(dipl_vals) >= 7 else dipl_vals
+    last7_viol = viol_vals[-7:] if len(viol_vals) >= 7 else viol_vals
+    avg_dipl_7d = round(sum(last7_dipl) / len(last7_dipl), 4) if last7_dipl else 0.0
+    avg_viol_7d = round(sum(last7_viol) / len(last7_viol), 4) if last7_viol else 0.0
+
+    denom = avg_dipl_7d + avg_viol_7d
+    pulse_index = round(avg_dipl_7d / denom, 3) if denom > 0 else None
+
+    return {
+        "country":      country,
+        "dates":        all_dates,
+        "diplomacy":    dipl_vals,
+        "violence":     viol_vals,
+        "avg_dipl_7d":  avg_dipl_7d,
+        "avg_viol_7d":  avg_viol_7d,
+        "pulse_index":  pulse_index,   # 0 = violence, 1 = diplomacy
+        "diplomacy_themes": DIPLOMACY_THEMES,
+        "violence_themes":  VIOLENCE_THEMES,
+    }
+
+
+@api_router.get("/gdelt-diplomacy")
+async def get_gdelt_diplomacy(country: str = "Ukraine"):
+    """Return GDELT diplomacy-vs-violence theme pulse for a conflict country.
+
+    Derived from GDELT GKG 2.0 theme timelines (30 days).
+    `pulse_index` runs 0 (pure violence coverage) → 1 (pure diplomacy coverage).
+    Served from a per-country 6-hour cache.
+    """
+    now = datetime.now(timezone.utc)
+    cache_ts = _gdelt_diplomacy_cache_ts.get(country)
+    cache_stale = (
+        cache_ts is None
+        or (now - cache_ts).total_seconds() > _DIPLOMACY_CACHE_TTL_HOURS * 3600
+    )
+    if cache_stale or country not in _gdelt_diplomacy_cache:
+        try:
+            result = await fetch_gdelt_diplomacy_for_country(country)
+            _gdelt_diplomacy_cache[country] = result
+            _gdelt_diplomacy_cache_ts[country] = now
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.warning(f"GDELT diplomacy fetch failed for {country}: {exc}")
+            if country not in _gdelt_diplomacy_cache:
+                raise HTTPException(status_code=503, detail="GDELT diplomacy data unavailable")
+
+    payload = _gdelt_diplomacy_cache[country]
+    return {
+        "fetched_at": _gdelt_diplomacy_cache_ts.get(country, now).isoformat(),
+        "source":     "GDELT DOC 2.0",
+        **payload,
+    }
+
+
 # ─── App setup ────────────────────────────────────────────────────────────────
 
 app.include_router(api_router)
@@ -2451,6 +2871,8 @@ async def startup_event():
     await refresh_all_data()
     # Refresh from primary sources every hour
     scheduler.add_job(refresh_all_data, 'interval', hours=1)
+    # GDELT alert ticker refreshes every 15 minutes (independent of hourly refresh)
+    scheduler.add_job(fetch_gdelt_alerts, 'interval', minutes=15)
     scheduler.start()
     logger.info("Scheduler started — data will refresh from primary sources every hour")
 
