@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import axios from 'axios';
 import Header from '../components/Header';
+import MediaAttentionChart from '../components/MediaAttentionChart';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 
@@ -676,6 +677,9 @@ export default function CounterPage() {
               </div>
             </div>
           )}
+
+          {/* ── Media attention & tone (GDELT) ── */}
+          <MediaAttentionChart />
 
           {/* ── Children section ── */}
           {data && (

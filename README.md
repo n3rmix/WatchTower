@@ -18,9 +18,9 @@ A comprehensive, data-driven platform for tracking ongoing global conflicts, cas
 
 ## Overview
 
-WatchTower is a real-time conflict monitoring system that aggregates casualty data, armed group information, and geopolitical news from credible international sources. The platform provides transparent, data-backed insights into 9 major global conflicts affecting millions of people worldwide — plus a full historical perspective across every UCDP-tracked conflict since 1946.
+WatchTower is a real-time conflict monitoring system that aggregates casualty data, armed group information, geopolitical news, and near-real-time media-attention signals from credible international sources. The platform provides transparent, data-backed insights into 11 major global conflicts affecting millions of people worldwide — plus a full historical perspective across every UCDP-tracked conflict since 1946.
 
-**Total Tracked:** 9 active conflicts | 60+ news articles | Live data from UCDP · OHCHR/OCHA — refreshed every hour
+**Total Tracked:** 11 active conflicts | 60+ news articles | Live data from UCDP · ACLED · OHCHR/OCHA · Hengaw/IHR · GDELT — refreshed every hour
 
 ---
 
@@ -65,6 +65,13 @@ WatchTower is a real-time conflict monitoring system that aggregates casualty da
   - 60+ articles from 12+ geopolitical news sources
   - Auto-scrolling marquee with clickable links
   - RSS feeds from Foreign Affairs, Foreign Policy, FT, The Economist, and more
+
+- **Media Attention & Escalation Signals (GDELT DOC 2.0)**
+  - **MediaAttentionChart** on the Counter page: 30-day timeline per conflict of daily article volume (area) and average sentiment/tone (line, –10 negative → +10 positive), with a country selector across all 11 tracked conflicts
+  - **7-day deltas** — volume Δ% and tone Δ vs. the previous 7 days rendered as inline badges, surfacing under-reported or worsening coverage patterns at a glance
+  - **Globe weighting** — the ConflictGlobe scales each of its baseline conflict markers by the last 7 days of GDELT article intensity, so hot coverage flares up and quiet fronts recede; falls back to the static markers when GDELT is unavailable
+  - **ConflictTable escalation badge** — every conflict row shows an *Escalating / De-escalating / Steady* chip driven by GDELT volume Δ and tone Δ, with a hover tooltip revealing the raw deltas
+  - **Strict source separation** — GDELT is a *media-signal* source only. It is stored in an in-memory `_gdelt_cache`, never in the `conflicts` or `chart_conflicts` collections, and never appears in the casualty pie chart or Deaths-by-Country bar chart
 
 - **Hourly Live Data Refresh**
   - Casualty figures pulled from primary sources every hour via APScheduler
@@ -113,8 +120,12 @@ All casualty statistics are sourced from verified international organizations an
 | **OHCHR** — UN Office of the High Commissioner for Human Rights | Ukraine civilian casualties (scraped) | None |
 | **OCHA oPt** — UN Office for Coordination of Humanitarian Affairs | Gaza total deaths (scraped) | None |
 | **ACLED** — Armed Conflict Location & Event Data | All conflicts (optional upgrade) | `ACLED_EMAIL` + `ACLED_KEY` env vars |
+| **GDELT DOC 2.0** — Global Database of Events, Language and Tone | Per-conflict media volume + sentiment (30-day timelines, 7-day deltas) | None (public API) |
+| **Hengaw / Iran Human Rights (IHR)** | Iran total deaths and executions (scraped) | None |
 
 When ACLED credentials are configured, ACLED takes priority over UCDP for the full conflict dataset (table and stat cards). The **Casualty Breakdown** and **Deaths by Country** charts always use UCDP + OHCHR/OCHA exclusively.
+
+**GDELT is a media-signal source, not a casualty source.** It powers the MediaAttentionChart, ConflictGlobe marker weighting, and ConflictTable escalation badge only. It is never written into the `conflicts` or `chart_conflicts` collections and never contributes to the casualty totals or charts.
 
 If all live sources fail, hardcoded baseline figures (themselves derived from the above sources at a fixed point in time) are used as a fallback.
 
@@ -145,13 +156,13 @@ If all live sources fail, hardcoded baseline figures (themselves derived from th
 - **APScheduler** — Hourly background data refresh
 - **Feedparser** — RSS feed parsing
 - **BeautifulSoup4** — Web scraping (OHCHR, OCHA)
-- **Aiohttp** — Async HTTP client
+- **Aiohttp** — Async HTTP client for UCDP / ACLED / GDELT DOC 2.0
 
 ### Frontend
 - **React 19** — UI library
 - **React Router** — Navigation
 - **Tailwind CSS** — Utility-first styling
-- **Recharts** — Data visualization (pie + bar charts)
+- **Recharts** — Data visualization (pie, bar, and composed volume/tone charts)
 - **React Fast Marquee** — News ticker
 - **Lucide React** — Icon system
 - **Axios** — HTTP client
@@ -369,8 +380,55 @@ Metadata about the most recent data fetch.
 ### `GET /api/news`
 Aggregated news articles from RSS feeds.
 
+### `GET /api/gdelt-timeline?country=`
+Per-conflict 30-day GDELT DOC 2.0 timeline of daily article volume and average tone. Powers the MediaAttentionChart on the Counter page. Served from the in-memory `_gdelt_cache`; a cache miss triggers an inline live fetch.
+
+| Parameter | Description |
+|-----------|-------------|
+| `country` | Optional country name (e.g. `Ukraine`, `Gaza/Palestine`, `Sudan`). If omitted, returns a dict of all tracked countries. |
+
+```json
+{
+  "country": "Ukraine",
+  "source": "GDELT DOC 2.0",
+  "fetched_at": "2026-07-03T10:00:00+00:00",
+  "dates":  ["2026-06-04", "2026-06-05", "..."],
+  "volume": [0.0142, 0.0158, 0.0113],
+  "tone":   [-3.42, -3.61, -2.90],
+  "latest_volume":    0.0113,
+  "avg_volume_7d":    0.0131,
+  "avg_tone_7d":      -3.15,
+  "volume_delta_pct": 12.4,
+  "tone_delta":       -0.28,
+  "centroid":         [49.0, 31.0]
+}
+```
+
+`volume_delta_pct` and `tone_delta` compare the last 7 days against the prior 7 days and drive the escalation badge in the ConflictTable.
+
+### `GET /api/live-events`
+Per-conflict media-density markers for the ConflictGlobe overlay. Returns a lightweight list of `{country, lat, lon, intensity, avg_tone_7d, volume_delta_pct, tone_delta}` where `intensity` is a 0..1 normalised value derived from GDELT 7-day average article volume.
+
+```json
+{
+  "source": "GDELT DOC 2.0",
+  "fetched_at": "2026-07-03T10:00:00+00:00",
+  "markers": [
+    {
+      "country": "Ukraine",
+      "lat": 49.0,
+      "lon": 31.0,
+      "intensity": 0.874,
+      "avg_tone_7d": -3.15,
+      "volume_delta_pct": 12.4,
+      "tone_delta": -0.28
+    }
+  ]
+}
+```
+
 ### `POST /api/refresh`
-Immediately triggers a full data refresh from all primary sources.
+Immediately triggers a full data refresh from all primary sources (including GDELT).
 
 ---
 
@@ -393,15 +451,24 @@ Every hour (APScheduler):
     ├─ Proportionally scale civilian/military/children from live totals
     ├─ Persist both datasets to MongoDB
     ├─ Store fetch timestamp, sources, chart_sources in system_metadata
-    └─ Rebuild treemap cache (UCDP battledeaths, all conflicts 1946–present)
+    ├─ Rebuild treemap cache (UCDP battledeaths, all conflicts 1946–present)
+    └─ Refresh GDELT DOC 2.0 volume + tone timelines per conflict
+          → stored in-memory in _gdelt_cache (never in Mongo casualty collections)
 
 Frontend polls every 5 min (Dashboard):
-    ├─ GET /api/conflicts       → detail table
+    ├─ GET /api/conflicts       → detail table (+ /api/live-events for escalation badges)
     ├─ GET /api/chart-conflicts → Deaths by Country chart
     ├─ GET /api/stats           → stat cards
     ├─ GET /api/chart-stats     → Casualty Breakdown chart
     ├─ GET /api/news            → news ticker
+    ├─ GET /api/live-events     → ConflictGlobe marker weighting
     └─ GET /api/last-update     → header timestamps + source pills
+
+Counter page (/counter) — on mount + hourly refresh:
+    ├─ GET /api/conflicts       → live baseline overrides
+    ├─ GET /api/last-update     → "sources updated" timestamp
+    └─ GET /api/gdelt-timeline?country=<selected>
+          → MediaAttentionChart: 30-day volume area + tone line + 7d deltas
 
 Human Cost Treemap (/human-cost) — on page load:
     └─ GET /api/treemap
@@ -437,12 +504,13 @@ WatchTower follows a **situation room aesthetic** inspired by military command c
 Contributions are welcome. Areas for improvement:
 
 **High Priority**
-- [ ] Historical trend charts
+- [x] Historical trend charts (GDELT DOC 2.0 30-day volume + tone timeline)
 - [x] World map / globe visualization
 - [x] Casualty heatmap (conflicts × categories)
 - [x] Actor accountability tracker (UCDP One-Sided Violence + GED cross-reference)
 - [x] Human Cost treemap — all UCDP conflicts 1946–present, proportional by cumulative deaths
-- [ ] Conflict timeline view
+- [x] Media attention & escalation signals (GDELT DOC 2.0)
+- [ ] Conflict timeline view (event-level GDELT geocoded overlay)
 
 **Medium Priority**
 - [ ] Export functionality (PDF/CSV) — especially useful for Actor Tracker compliance reports

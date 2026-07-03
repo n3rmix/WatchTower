@@ -70,7 +70,7 @@ WatchTower/
 | APScheduler | — | Hourly background scheduler |
 | Feedparser | — | RSS feed parsing |
 | BeautifulSoup4 | — | Web scraping (OHCHR, OCHA oPt) |
-| Aiohttp | — | Async HTTP client for UCDP/ACLED |
+| Aiohttp | — | Async HTTP client for UCDP/ACLED/GDELT |
 | python-dotenv | — | `.env` loading |
 
 ### Frontend
@@ -165,8 +165,12 @@ REACT_APP_BACKEND_URL=http://localhost:8001
 | `GET /api/news` | News ticker | RSS feeds |
 | `GET /api/last-update` | Header timestamps | `system_metadata` |
 | `POST /api/refresh` | Manual trigger | All sources |
+| `GET /api/gdelt-timeline?country=` | Counter MediaAttentionChart | GDELT DOC 2.0 (30-day volume + tone) |
+| `GET /api/live-events` | ConflictGlobe overlay + ConflictTable escalation badge | GDELT DOC 2.0 (7-day intensity per country) |
 
 **Source separation rule:** Charts (`/api/chart-*`) must **always** use UCDP + OHCHR/OCHA only. Never route ACLED data into chart endpoints. This is intentional for source transparency.
+
+**GDELT rule:** GDELT is a *media-signal* source only. Its data lives in the in-memory `_gdelt_cache` and is served via `/api/gdelt-timeline` and `/api/live-events`. It **must never** be written into `conflicts` or `chart_conflicts` and must never appear in the casualty pie chart or Deaths-by-Country bar chart. GDELT informs the MediaAttentionChart on the Counter page, marker weighting on ConflictGlobe, and the escalation badge in ConflictTable.
 
 ---
 

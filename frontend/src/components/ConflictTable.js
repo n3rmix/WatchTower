@@ -1,4 +1,8 @@
-import { Globe2, Users, Database, Clock } from "lucide-react";
+import { useEffect, useState } from "react";
+import axios from "axios";
+import { Globe2, Users, Database, Clock, TrendingUp, TrendingDown, Radio } from "lucide-react";
+
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 
 /** Format an ISO string as "DD MMM YYYY HH:MM UTC" */
 function formatTimestamp(ts) {
@@ -20,6 +24,60 @@ const INTENSITY_DESCRIPTIONS = {
   High:     "Significant ongoing violence with substantial documented casualties. Regular armed engagements with notable humanitarian impact.",
   Medium:   "Moderate conflict activity. Armed clashes are recorded but intensity remains below major-war thresholds.",
   Low:      "Limited documented events or early-stage conflict. Incident frequency and casualty counts are relatively low.",
+};
+
+/**
+ * GDELT-derived escalation signal — combines 7-day tone delta and volume delta
+ * into a single "escalating / de-escalating / steady" chip.
+ * Negative tone delta + rising volume = escalating.
+ * Positive tone delta + falling volume = de-escalating.
+ */
+const EscalationBadge = ({ signal }) => {
+  if (!signal) return null;
+  const { volume_delta_pct: vd, tone_delta: td } = signal;
+  if (vd == null && td == null) return null;
+
+  let label = "Steady";
+  let color = "text-zinc-500 border-zinc-800 bg-zinc-900/40";
+  let Icon = Radio;
+  const escalating = (vd != null && vd > 15) || (td != null && td < -0.3);
+  const easing     = (vd != null && vd < -15) && (td == null || td > 0);
+  if (escalating) {
+    label = "Escalating";
+    color = "text-red-400 border-red-900 bg-red-950/40";
+    Icon = TrendingUp;
+  } else if (easing) {
+    label = "De-escalating";
+    color = "text-emerald-400 border-emerald-900 bg-emerald-950/40";
+    Icon = TrendingDown;
+  }
+
+  return (
+    <div className="relative group inline-flex">
+      <span
+        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-sm text-[10px] font-mono uppercase tracking-wider border cursor-default ${color}`}
+      >
+        <Icon className="w-2.5 h-2.5" />
+        {label}
+      </span>
+      {/* Tooltip */}
+      <div className="absolute bottom-full left-0 mb-2 hidden group-hover:block z-50 w-60 pointer-events-none">
+        <div className="bg-zinc-900 border border-zinc-700 rounded-sm shadow-xl p-3 text-left">
+          <p className="text-xs font-mono font-semibold uppercase tracking-wider mb-1 text-zinc-300">
+            GDELT 7-day trend
+          </p>
+          <div className="text-[10px] font-mono text-zinc-400 space-y-0.5">
+            <p>Volume Δ: {vd != null ? `${vd > 0 ? "+" : ""}${vd.toFixed(0)}%` : "—"}</p>
+            <p>Tone Δ: {td != null ? `${td > 0 ? "+" : ""}${td.toFixed(2)}` : "—"}</p>
+          </div>
+          <p className="text-[10px] text-zinc-600 mt-2 pt-2 border-t border-zinc-800 font-mono leading-relaxed">
+            GDELT DOC 2.0 — media coverage vs. previous 7 days. Not a casualty source.
+          </p>
+        </div>
+        <div className="w-2 h-2 bg-zinc-900 border-r border-b border-zinc-700 rotate-45 ml-3 -mt-1" />
+      </div>
+    </div>
+  );
 };
 
 const IntensityBadge = ({ tier = "Low" }) => (
@@ -50,6 +108,21 @@ const IntensityBadge = ({ tier = "Low" }) => (
 
 const ConflictTable = ({ conflicts, dataLastFetch }) => {
   const sectionTs = formatTimestamp(dataLastFetch);
+  const [gdeltByCountry, setGdeltByCountry] = useState({});
+
+  useEffect(() => {
+    let cancelled = false;
+    axios
+      .get(`${BACKEND_URL}/api/live-events`)
+      .then(res => {
+        if (cancelled) return;
+        const map = {};
+        (res.data?.markers ?? []).forEach(m => { map[m.country] = m; });
+        setGdeltByCountry(map);
+      })
+      .catch(() => { /* silent — badge just won't render */ });
+    return () => { cancelled = true; };
+  }, []);
 
   return (
     <div className="tactical-card p-6 corner-accent mb-20" data-testid="conflict-table">
@@ -80,8 +153,9 @@ const ConflictTable = ({ conflicts, dataLastFetch }) => {
                   <p className="text-xs uppercase tracking-wider font-mono text-zinc-500 mb-1">Country</p>
                   <p className="font-mono text-zinc-200 font-semibold">{conflict.country}</p>
                   <p className="font-mono text-zinc-500 text-xs mt-1">{conflict.region}</p>
-                  <div className="mt-1.5">
+                  <div className="mt-1.5 flex flex-wrap gap-1.5">
                     <IntensityBadge tier={conflict.intensity_tier} />
+                    <EscalationBadge signal={gdeltByCountry[conflict.country]} />
                   </div>
                   {conflictTs && (
                     <p className="flex items-center gap-1 font-mono text-zinc-700 text-xs mt-1" data-testid={`conflict-timestamp-${index}`}>

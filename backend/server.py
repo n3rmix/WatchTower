@@ -1020,7 +1020,7 @@ async def fetch_treemap_data() -> Dict:
 # ─── Background refresh task ──────────────────────────────────────────────────
 
 async def refresh_all_data():
-    """Refresh news, conflict casualty data, and treemap from primary sources."""
+    """Refresh news, conflict casualty data, treemap, and GDELT signals from primary sources."""
     logger.info("Starting hourly data refresh…")
     try:
         await fetch_rss_feeds()
@@ -1029,6 +1029,13 @@ async def refresh_all_data():
         logger.info("Hourly data refresh completed successfully")
     except Exception as e:
         logger.error(f"Error during data refresh: {e}")
+
+    # GDELT is media-derived context, kept in its own cache and fetched last
+    # so a GDELT outage cannot delay casualty data being persisted.
+    try:
+        await fetch_gdelt_data()
+    except Exception as exc:
+        logger.warning(f"GDELT refresh failed (non-fatal): {exc}")
 
     # Pre-warm actor-network cache in background so the first user request is instant.
     asyncio.create_task(_build_actor_network_cache())
@@ -2166,6 +2173,262 @@ async def get_lifelines(conflict: str = "Ukraine", cohort_birth: int = 2000):
     _lifelines_cache[cache_key] = result
     _lifelines_cache_ts[cache_key] = now
     return result
+
+
+# ─── GDELT DOC 2.0 integration ────────────────────────────────────────────────
+#
+# GDELT DOC 2.0 is a public, no-auth API surfacing global online news volume,
+# tone, and geocoded article metadata (updated every 15 minutes). It provides
+# media-attention and sentiment signals that complement — but never replace —
+# the casualty totals from UCDP/ACLED/OHCHR/OCHA. GDELT rows are stored in a
+# dedicated collection (`gdelt_timeline`) and are never merged into `conflicts`
+# or `chart_conflicts`, preserving the existing source-separation rule.
+#
+# Docs consulted (offline): GDELT DOC 2.0 timeline modes accept a free-text
+# query, a `timespan` (e.g. `30d`, `7d`) and `mode=timelinevolraw` or
+# `timelinetone` and return date-bucketed JSON.
+
+GDELT_DOC_API = "https://api.gdeltproject.org/api/v2/doc/doc"
+
+# Approximate geographic centroid (lat, lon) per tracked conflict — used to
+# anchor the ConflictGlobe live-event markers. These are the same country
+# anchors used in `frontend/src/components/ConflictGlobe.js` BASE_MARKERS.
+GDELT_COUNTRY_CENTROIDS: Dict[str, tuple] = {
+    'Ukraine':        (49.0,  31.0),
+    'Gaza/Palestine': (31.5,  34.5),
+    'Sudan':          (15.5,  32.5),
+    'Myanmar':        (17.0,  96.0),
+    'Syria':          (35.0,  38.0),
+    'Yemen':          (15.5,  48.0),
+    'Ethiopia':       (9.0,   40.0),
+    'DRC (Congo)':    (-4.0,  21.5),
+    'Iran':           (32.0,  53.0),
+    'Lebanon':        (33.9,  35.5),
+    'Haiti':          (18.9, -72.3),
+}
+
+# GDELT DOC 2.0 free-text query per conflict. Kept intentionally simple —
+# the country name alone is a well-tuned filter in GDELT.
+GDELT_QUERY_MAP: Dict[str, str] = {
+    'Ukraine':        '(Ukraine war OR Ukraine conflict OR Ukraine Russia)',
+    'Gaza/Palestine': '(Gaza OR "Gaza Strip" OR Palestine conflict)',
+    'Sudan':          '(Sudan war OR "Sudan conflict" OR RSF Sudan)',
+    'Myanmar':        '(Myanmar OR Burma) (junta OR "civil war" OR conflict)',
+    'Syria':          '(Syria conflict OR "Syrian war" OR Syria HTS OR Syria SDF)',
+    'Yemen':          '(Yemen OR Houthi) (war OR conflict OR strike)',
+    'Ethiopia':       '(Ethiopia OR Amhara OR Tigray) (conflict OR fighting)',
+    'DRC (Congo)':    '(Congo OR DRC OR M23) (conflict OR fighting)',
+    'Iran':           '(Iran war OR "Iran conflict" OR "Iran strike")',
+    'Lebanon':        '(Lebanon OR Hezbollah) (war OR strike OR conflict)',
+    'Haiti':          '(Haiti gang OR "Haiti violence" OR "Haiti conflict")',
+}
+
+# In-memory cache mirroring the pattern used by _treemap_cache. Populated by
+# the hourly scheduler; served straight from the API endpoints.
+_gdelt_cache: Dict[str, Dict] = {}   # country -> {volume, tone, dates, latest_*, ...}
+_gdelt_cache_ts: Optional[datetime] = None
+
+
+async def _gdelt_fetch_mode(
+    session: aiohttp.ClientSession,
+    query: str,
+    mode: str,
+    timespan: str = "30d",
+) -> Optional[Dict]:
+    """Call the GDELT DOC 2.0 API for a single mode and return parsed JSON.
+
+    GDELT accepts requests without authentication but throttles aggressively;
+    a 15 second timeout is used and non-200s are logged and swallowed.
+    """
+    params = {
+        "query":    query,
+        "mode":     mode,
+        "timespan": timespan,
+        "format":   "json",
+    }
+    try:
+        async with session.get(
+            GDELT_DOC_API,
+            params=params,
+            timeout=aiohttp.ClientTimeout(total=15),
+        ) as resp:
+            if resp.status != 200:
+                logger.warning(f"GDELT {mode} HTTP {resp.status} for query={query!r}")
+                return None
+            # GDELT sometimes returns text/html on rate-limit — guard the parse.
+            text = await resp.text()
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                logger.warning(f"GDELT {mode} returned non-JSON body for query={query!r}")
+                return None
+    except Exception as exc:
+        logger.warning(f"GDELT {mode} error for query={query!r}: {exc}")
+        return None
+
+
+def _parse_gdelt_timeline(volume_json: Optional[Dict], tone_json: Optional[Dict]) -> Dict:
+    """Convert GDELT timeline JSON blobs into a flat, chart-ready payload.
+
+    Both `timelinevolraw` and `timelinetone` return `{"timeline": [{"data": [{"date","value"}]}]}`.
+    Dates in DOC 2.0 come as `YYYYMMDDTHHMMSSZ`; we normalise to `YYYY-MM-DD`.
+    """
+    def _extract(js: Optional[Dict]) -> Dict[str, float]:
+        if not js or "timeline" not in js or not js["timeline"]:
+            return {}
+        series = js["timeline"][0].get("data", [])
+        out: Dict[str, float] = {}
+        for pt in series:
+            raw = pt.get("date", "")
+            try:
+                # Normalise to date-only bucket
+                day = f"{raw[0:4]}-{raw[4:6]}-{raw[6:8]}"
+                out[day] = float(pt.get("value") or 0)
+            except Exception:
+                continue
+        return out
+
+    volume_by_day = _extract(volume_json)
+    tone_by_day   = _extract(tone_json)
+    dates = sorted(set(volume_by_day) | set(tone_by_day))
+    return {
+        "dates":  dates,
+        "volume": [volume_by_day.get(d, 0.0) for d in dates],
+        "tone":   [tone_by_day.get(d,   0.0) for d in dates],
+    }
+
+
+async def fetch_gdelt_data() -> Dict[str, Dict]:
+    """Fetch GDELT 30-day volume + tone timelines for every tracked conflict.
+
+    Returns {country: {dates, volume, tone, latest_volume, avg_volume_7d, avg_tone_7d}}.
+    Results are cached in-memory (`_gdelt_cache`) and served by
+    `/api/gdelt-timeline` and `/api/live-events`.
+    """
+    global _gdelt_cache, _gdelt_cache_ts
+    results: Dict[str, Dict] = {}
+
+    async with aiohttp.ClientSession(headers={"User-Agent": "WatchTower/1.0"}) as session:
+        for country, query in GDELT_QUERY_MAP.items():
+            vol_json, tone_json = await asyncio.gather(
+                _gdelt_fetch_mode(session, query, "timelinevolraw"),
+                _gdelt_fetch_mode(session, query, "timelinetone"),
+            )
+            parsed = _parse_gdelt_timeline(vol_json, tone_json)
+
+            # Aggregate helpers used by the frontend widgets
+            vol_series = parsed["volume"]
+            tone_series = parsed["tone"]
+            last7_vol  = vol_series[-7:]  if len(vol_series)  >= 1 else []
+            last7_tone = tone_series[-7:] if len(tone_series) >= 1 else []
+            latest_volume  = vol_series[-1] if vol_series  else 0.0
+            avg_volume_7d  = round(sum(last7_vol)  / len(last7_vol),  4) if last7_vol  else 0.0
+            avg_tone_7d    = round(sum(last7_tone) / len(last7_tone), 4) if last7_tone else 0.0
+
+            # Simple 7d vs prior-7d delta for the "escalating / de-escalating" badge
+            prev7_vol  = vol_series[-14:-7] if len(vol_series) >= 14 else []
+            prev7_tone = tone_series[-14:-7] if len(tone_series) >= 14 else []
+            volume_delta_pct: Optional[float] = None
+            if prev7_vol and sum(prev7_vol) > 0:
+                volume_delta_pct = round(
+                    ((sum(last7_vol) - sum(prev7_vol)) / sum(prev7_vol)) * 100, 1
+                )
+            tone_delta: Optional[float] = None
+            if prev7_tone:
+                tone_delta = round(avg_tone_7d - (sum(prev7_tone) / len(prev7_tone)), 3)
+
+            results[country] = {
+                **parsed,
+                "latest_volume":    round(latest_volume, 4),
+                "avg_volume_7d":    avg_volume_7d,
+                "avg_tone_7d":      avg_tone_7d,
+                "volume_delta_pct": volume_delta_pct,
+                "tone_delta":       tone_delta,
+                "centroid":         list(GDELT_COUNTRY_CENTROIDS.get(country, (0.0, 0.0))),
+            }
+            logger.info(
+                f"GDELT: {country} → volume7d={avg_volume_7d} tone7d={avg_tone_7d} "
+                f"Δvol={volume_delta_pct}% Δtone={tone_delta}"
+            )
+
+    _gdelt_cache = results
+    _gdelt_cache_ts = datetime.now(timezone.utc)
+    logger.info(f"GDELT cache updated: {len(results)}/{len(GDELT_QUERY_MAP)} conflicts")
+    return results
+
+
+@api_router.get("/gdelt-timeline")
+async def get_gdelt_timeline(country: Optional[str] = None):
+    """Return GDELT DOC 2.0 volume + tone timeline.
+
+    If `country` is provided, returns the single-country payload; otherwise
+    returns a dict keyed by country name. Served from the in-memory cache
+    populated by the hourly scheduler.
+    """
+    if not _gdelt_cache:
+        # Cache miss (backend just restarted) — try a live fetch inline.
+        try:
+            await fetch_gdelt_data()
+        except Exception as exc:
+            logger.warning(f"GDELT inline fetch failed: {exc}")
+    if country:
+        payload = _gdelt_cache.get(country)
+        if not payload:
+            raise HTTPException(status_code=404, detail=f"No GDELT data for country={country!r}")
+        return {
+            "country":     country,
+            "fetched_at":  _gdelt_cache_ts.isoformat() if _gdelt_cache_ts else None,
+            "source":      "GDELT DOC 2.0",
+            **payload,
+        }
+    return {
+        "fetched_at":  _gdelt_cache_ts.isoformat() if _gdelt_cache_ts else None,
+        "source":      "GDELT DOC 2.0",
+        "countries":   _gdelt_cache,
+    }
+
+
+@api_router.get("/live-events")
+async def get_live_events():
+    """Return per-conflict media-density markers for the globe overlay.
+
+    Emits a lightweight list of {country, lat, lon, intensity, tone, volume_delta}
+    suitable for rendering as pulsing globe markers. Intensity is a 0..1
+    normalised value derived from GDELT 7-day average article volume.
+    """
+    if not _gdelt_cache:
+        try:
+            await fetch_gdelt_data()
+        except Exception as exc:
+            logger.warning(f"GDELT inline fetch failed: {exc}")
+
+    if not _gdelt_cache:
+        return {"fetched_at": None, "source": "GDELT DOC 2.0", "markers": []}
+
+    max_vol = max((c.get("avg_volume_7d", 0.0) for c in _gdelt_cache.values()), default=0.0) or 1.0
+
+    markers = []
+    for country, payload in _gdelt_cache.items():
+        lat, lon = payload.get("centroid", [0.0, 0.0])
+        if lat == 0.0 and lon == 0.0:
+            continue
+        vol = payload.get("avg_volume_7d", 0.0)
+        intensity = min(1.0, vol / max_vol) if max_vol else 0.0
+        markers.append({
+            "country":          country,
+            "lat":              lat,
+            "lon":              lon,
+            "intensity":        round(intensity, 3),
+            "avg_tone_7d":      payload.get("avg_tone_7d", 0.0),
+            "volume_delta_pct": payload.get("volume_delta_pct"),
+            "tone_delta":       payload.get("tone_delta"),
+        })
+
+    return {
+        "fetched_at": _gdelt_cache_ts.isoformat() if _gdelt_cache_ts else None,
+        "source":     "GDELT DOC 2.0",
+        "markers":    markers,
+    }
 
 
 # ─── App setup ────────────────────────────────────────────────────────────────
