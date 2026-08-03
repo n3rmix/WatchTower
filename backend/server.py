@@ -2981,7 +2981,11 @@ async def get_gdelt_themes(country: str = "Ukraine"):
     """Return GDELT humanitarian-theme timelines for a single conflict country.
 
     Supported themes: KILL, WOUND, REFUGEES, FAMINE, HOSPITAL, HUMANITARIAN,
-    CEASEFIRE, PEACE.  Served from a per-country 6-hour cache.
+    CEASEFIRE, PEACE.  Served from a per-country 24-hour cache.
+
+    Never blocks on a live DOC 2.0 fetch — if the cache is cold or stale the
+    live fetch is dispatched as a background task and the endpoint returns the
+    stale payload immediately (or 202 if no data has ever been fetched).
     """
     now = datetime.now(timezone.utc)
     cache_ts = _gdelt_themes_cache_ts.get(country)
@@ -2989,17 +2993,23 @@ async def get_gdelt_themes(country: str = "Ukraine"):
         cache_ts is None
         or (now - cache_ts).total_seconds() > _THEMES_CACHE_TTL_HOURS * 3600
     )
-    if cache_stale or country not in _gdelt_themes_cache:
+
+    async def _refresh():
         try:
             result = await fetch_gdelt_themes_for_country(country)
             _gdelt_themes_cache[country] = result
-            _gdelt_themes_cache_ts[country] = now
-        except HTTPException:
-            raise
+            _gdelt_themes_cache_ts[country] = datetime.now(timezone.utc)
         except Exception as exc:
-            logger.warning(f"GDELT themes fetch failed for {country}: {exc}")
-            if country not in _gdelt_themes_cache:
-                raise HTTPException(status_code=503, detail="GDELT themes unavailable")
+            logger.warning(f"GDELT themes background refresh failed for {country}: {exc}")
+
+    if cache_stale or country not in _gdelt_themes_cache:
+        if country not in _gdelt_themes_cache:
+            # No data at all — kick off background fetch and return 202
+            asyncio.create_task(_refresh())
+            return {"fetched_at": None, "source": "GDELT DOC 2.0", "pending": True,
+                    "country": country, "timelines": {}, "radar_values": {}, "themes": HUMANITARIAN_THEMES}
+        # Stale but present — return immediately, refresh in background
+        asyncio.create_task(_refresh())
 
     payload = _gdelt_themes_cache[country]
     return {
@@ -3085,7 +3095,10 @@ async def get_gdelt_diplomacy(country: str = "Ukraine"):
 
     Derived from GDELT GKG 2.0 theme timelines (30 days).
     `pulse_index` runs 0 (pure violence coverage) → 1 (pure diplomacy coverage).
-    Served from a per-country 6-hour cache.
+    Served from a per-country 24-hour cache.
+
+    Same non-blocking pattern as /gdelt-themes: stale data is returned
+    immediately while a background task refreshes the cache.
     """
     now = datetime.now(timezone.utc)
     cache_ts = _gdelt_diplomacy_cache_ts.get(country)
@@ -3093,17 +3106,24 @@ async def get_gdelt_diplomacy(country: str = "Ukraine"):
         cache_ts is None
         or (now - cache_ts).total_seconds() > _DIPLOMACY_CACHE_TTL_HOURS * 3600
     )
-    if cache_stale or country not in _gdelt_diplomacy_cache:
+
+    async def _refresh():
         try:
             result = await fetch_gdelt_diplomacy_for_country(country)
             _gdelt_diplomacy_cache[country] = result
-            _gdelt_diplomacy_cache_ts[country] = now
-        except HTTPException:
-            raise
+            _gdelt_diplomacy_cache_ts[country] = datetime.now(timezone.utc)
         except Exception as exc:
-            logger.warning(f"GDELT diplomacy fetch failed for {country}: {exc}")
-            if country not in _gdelt_diplomacy_cache:
-                raise HTTPException(status_code=503, detail="GDELT diplomacy data unavailable")
+            logger.warning(f"GDELT diplomacy background refresh failed for {country}: {exc}")
+
+    if cache_stale or country not in _gdelt_diplomacy_cache:
+        if country not in _gdelt_diplomacy_cache:
+            # No data yet — fire background fetch and return empty payload
+            asyncio.create_task(_refresh())
+            return {"fetched_at": None, "source": "GDELT DOC 2.0", "pending": True,
+                    "country": country, "timelines": {}, "pulse_index": None,
+                    "diplomacy_score": None, "violence_score": None}
+        # Stale but present — return immediately, refresh in background
+        asyncio.create_task(_refresh())
 
     payload = _gdelt_diplomacy_cache[country]
     return {
