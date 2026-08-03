@@ -3160,92 +3160,6 @@ app.add_middleware(
 scheduler = AsyncIOScheduler()
 
 
-async def _seed_gdelt_from_doc_api() -> None:
-    """One-time background seed of _gdelt_cache from the DOC 2.0 API.
-
-    Called at startup when gdelt_ticks has no historical data yet.  Uses the
-    existing rate-limited _gdelt_fetch_mode so the 15-min CSV ticker is not
-    disrupted.  Once complete, _gdelt_cache is populated with a 30-day window
-    and the CSV pipeline takes over for subsequent updates.
-    """
-    global _gdelt_cache, _gdelt_cache_ts
-
-    # Skip if the CSV pipeline already has enough history
-    count = await db.gdelt_ticks.count_documents({})
-    if count > 50:  # at least a few ticks already accumulated
-        logger.info("GDELT seed: gdelt_ticks has data — skipping DOC API seed")
-        return
-
-    logger.info("GDELT seed: gdelt_ticks empty — seeding _gdelt_cache from DOC 2.0 API (one-time)")
-    results: Dict[str, Dict] = {}
-
-    def _parse_doc_timeline(vol_json, tone_json):
-        """Inline DOC 2.0 timeline parser (vol + tone → aligned day series)."""
-        def extract(blob):
-            if not blob or not blob.get("timeline"):
-                return {}, {}
-            vals, counts = {}, {}
-            for pt in (blob["timeline"][0].get("data") or []):
-                raw = pt.get("date", "")
-                try:
-                    day = f"{raw[0:4]}-{raw[4:6]}-{raw[6:8]}"
-                    v   = float(pt.get("value") or 0)
-                    vals[day]   = vals.get(day, 0.0) + v
-                    counts[day] = counts.get(day, 0) + 1
-                except Exception:
-                    continue
-            return vals, counts
-
-        vols, _  = extract(vol_json)
-        traw, tc = extract(tone_json)
-        tones    = {d: round(v / tc[d], 4) if tc.get(d) else v for d, v in traw.items()}
-        dates    = sorted(set(vols) | set(tones))
-        return {
-            "dates":  dates,
-            "volume": [vols.get(d, 0.0)  for d in dates],
-            "tone":   [tones.get(d, 0.0) for d in dates],
-        }
-
-    async with aiohttp.ClientSession(headers={"User-Agent": "WatchTower/1.0"}) as session:
-        for country, query in GDELT_QUERY_MAP.items():
-            vol_json  = await _gdelt_fetch_mode(session, query, "timelinevolraw")
-            tone_json = await _gdelt_fetch_mode(session, query, "timelinetone")
-            parsed    = _parse_doc_timeline(vol_json, tone_json)
-
-            vols  = parsed["volume"]
-            tones = parsed["tone"]
-            l7v   = vols[-7:]    if vols  else []
-            l7t   = tones[-7:]   if tones else []
-            p7v   = vols[-14:-7] if len(vols)  >= 14 else []
-            p7t   = tones[-14:-7] if len(tones) >= 14 else []
-
-            avg_vol  = round(sum(l7v) / len(l7v), 4) if l7v else 0.0
-            avg_tone = round(sum(l7t) / len(l7t), 4) if l7t else 0.0
-            delta_pct: Optional[float] = None
-            if p7v and sum(p7v) > 0:
-                delta_pct = round(((sum(l7v) - sum(p7v)) / sum(p7v)) * 100, 1)
-            tone_delta: Optional[float] = None
-            if p7t:
-                tone_delta = round(avg_tone - sum(p7t) / len(p7t), 3)
-
-            results[country] = {
-                **parsed,
-                "latest_volume":    round(vols[-1], 4) if vols else 0.0,
-                "avg_volume_7d":    avg_vol,
-                "avg_tone_7d":      avg_tone,
-                "volume_delta_pct": delta_pct,
-                "tone_delta":       tone_delta,
-                "centroid":         list(GDELT_COUNTRY_CENTROIDS.get(country, (0.0, 0.0))),
-            }
-            logger.info(f"GDELT seed: {country} → vol7d={avg_vol} tone7d={avg_tone}")
-
-    if results:
-        _gdelt_cache    = results
-        _gdelt_cache_ts = datetime.now(timezone.utc)
-        logger.info(f"GDELT seed complete: {len(results)} countries in _gdelt_cache")
-    else:
-        logger.warning("GDELT seed: DOC API returned no data")
-
 
 async def _ensure_gdelt_indexes() -> None:
     """Create MongoDB indexes for the gdelt_ticks collection (idempotent)."""
@@ -3279,11 +3193,9 @@ async def startup_event():
         "Scheduler started — casualty data refreshes hourly, "
         "GDELT CSV pipeline refreshes every 15 minutes"
     )
-    # Seed GDELT cache on startup (runs in background, doesn't block).
-    # _seed_gdelt_from_doc_api runs first: if gdelt_ticks is empty it populates
-    # _gdelt_cache immediately via DOC 2.0 so widgets aren't blank.
-    # fetch_gdelt_csv_tick then picks up the latest 15-min file and takes over.
-    asyncio.create_task(_seed_gdelt_from_doc_api())
+    # Seed GDELT cache from the CSV pipeline on startup (no DOC 2.0 API calls).
+    # Downloads the latest 15-min GDELT events file, upserts to gdelt_ticks,
+    # and rebuilds _gdelt_cache from MongoDB.  Subsequent ticks run every 15 min.
     asyncio.create_task(fetch_gdelt_csv_tick())
 
 
