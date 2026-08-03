@@ -1032,10 +1032,16 @@ async def refresh_all_data():
 
     # GDELT is media-derived context, kept in its own cache and fetched last
     # so a GDELT outage cannot delay casualty data being persisted.
+    # fetch_gdelt_data + fetch_gdelt_alerts share the global rate lock so all
+    # requests are serialised — no concurrent hits to api.gdeltproject.org.
     try:
         await fetch_gdelt_data()
     except Exception as exc:
-        logger.warning(f"GDELT refresh failed (non-fatal): {exc}")
+        logger.warning(f"GDELT timeline refresh failed (non-fatal): {exc}")
+    try:
+        await fetch_gdelt_alerts()
+    except Exception as exc:
+        logger.warning(f"GDELT alerts refresh failed (non-fatal): {exc}")
 
     # Pre-warm actor-network cache in background so the first user request is instant.
     asyncio.create_task(_build_actor_network_cache())
@@ -2228,12 +2234,16 @@ GDELT_QUERY_MAP: Dict[str, str] = {
 _gdelt_cache: Dict[str, Dict] = {}   # country -> {volume, tone, dates, latest_*, ...}
 _gdelt_cache_ts: Optional[datetime] = None
 
-# Global rate-limiter for GDELT DOC 2.0.  The API enforces "one request every
-# 5 seconds"; a 6-second gap gives a comfortable margin.  All callers must
-# acquire this lock before sending any request to api.gdeltproject.org.
+# Global rate-limiter for GDELT DOC 2.0.  The API enforces roughly one request
+# every 10 seconds; _GDELT_MIN_INTERVAL=15s gives a comfortable margin.  All
+# callers must acquire this lock before sending any request to api.gdeltproject.org.
 _gdelt_rate_lock: asyncio.Lock = asyncio.Lock()
 _gdelt_last_request_ts: Optional[float] = None  # monotonic seconds
-_GDELT_MIN_INTERVAL: float = 12.0   # GDELT enforces ~10s in practice; 12s gives margin
+_GDELT_MIN_INTERVAL: float = 15.0   # Widened from 12s — network jitter can cause false 429s near the 10s floor
+
+# Retry config: on 429 or non-JSON (soft throttle), wait this many seconds then
+# attempt exactly one more request before giving up for this cycle.
+_GDELT_RETRY_DELAYS: tuple = (30, 60)   # seconds to wait before attempt 2, attempt 3
 
 
 async def _gdelt_fetch_mode(
@@ -2244,9 +2254,11 @@ async def _gdelt_fetch_mode(
 ) -> Optional[Dict]:
     """Call the GDELT DOC 2.0 API for a single mode and return parsed JSON.
 
-    Enforces the GDELT rate-limit of one request every 5 seconds by acquiring
-    a global asyncio.Lock and sleeping until the minimum interval has elapsed.
-    Non-200 and non-JSON responses are logged and return None (never raise).
+    Enforces the rate-limit of one request every _GDELT_MIN_INTERVAL seconds via
+    a global asyncio.Lock.  On 429 or soft-throttle (200 + plain-text body) the
+    function waits _GDELT_RETRY_DELAYS[attempt] seconds and retries up to
+    len(_GDELT_RETRY_DELAYS) additional times before returning None.
+    Non-retriable HTTP errors and network exceptions still return None immediately.
     """
     global _gdelt_last_request_ts
 
@@ -2257,40 +2269,67 @@ async def _gdelt_fetch_mode(
         "format":   "json",
     }
 
-    async with _gdelt_rate_lock:
-        # Sleep if the minimum interval since the last request hasn't elapsed.
-        if _gdelt_last_request_ts is not None:
-            elapsed = asyncio.get_event_loop().time() - _gdelt_last_request_ts
-            gap = _GDELT_MIN_INTERVAL - elapsed
-            if gap > 0:
-                await asyncio.sleep(gap)
-        _gdelt_last_request_ts = asyncio.get_event_loop().time()
+    max_attempts = 1 + len(_GDELT_RETRY_DELAYS)   # 1 initial + N retries
 
-        try:
-            async with session.get(
-                GDELT_DOC_API,
-                params=params,
-                timeout=aiohttp.ClientTimeout(total=30),
-            ) as resp:
-                if resp.status == 429:
-                    logger.warning(f"GDELT rate-limited (429) for mode={mode} query={query!r}")
-                    return None
-                if resp.status != 200:
-                    logger.warning(f"GDELT {mode} HTTP {resp.status} for query={query!r}")
-                    return None
-                text = await resp.text()
-                # GDELT returns a plain-text rate-limit message on 200 when throttled.
-                if not text.strip().startswith("{"):
-                    logger.warning(f"GDELT {mode} returned non-JSON for query={query!r}: {text[:80]!r}")
-                    return None
-                try:
-                    return json.loads(text)
-                except json.JSONDecodeError:
-                    logger.warning(f"GDELT {mode} JSON parse error for query={query!r}")
-                    return None
-        except Exception as exc:
-            logger.warning(f"GDELT {mode} error for query={query!r}: {exc}")
-            return None
+    for attempt in range(max_attempts):
+        async with _gdelt_rate_lock:
+            # Sleep until the minimum inter-request gap has elapsed.
+            if _gdelt_last_request_ts is not None:
+                elapsed = asyncio.get_event_loop().time() - _gdelt_last_request_ts
+                gap = _GDELT_MIN_INTERVAL - elapsed
+                if gap > 0:
+                    await asyncio.sleep(gap)
+            _gdelt_last_request_ts = asyncio.get_event_loop().time()
+
+            try:
+                async with session.get(
+                    GDELT_DOC_API,
+                    params=params,
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as resp:
+                    if resp.status == 429:
+                        retry_wait = _GDELT_RETRY_DELAYS[attempt] if attempt < len(_GDELT_RETRY_DELAYS) else None
+                        if retry_wait is not None:
+                            logger.warning(
+                                f"GDELT rate-limited (429) for mode={mode} query={query!r} "
+                                f"— retrying in {retry_wait}s (attempt {attempt + 1}/{max_attempts})"
+                            )
+                            await asyncio.sleep(retry_wait)
+                            continue
+                        logger.warning(f"GDELT rate-limited (429) for mode={mode} query={query!r} — giving up")
+                        return None
+
+                    if resp.status != 200:
+                        logger.warning(f"GDELT {mode} HTTP {resp.status} for query={query!r} — not retrying")
+                        return None
+
+                    text = await resp.text()
+                    # GDELT returns a plain-text throttle message on HTTP 200 when overloaded.
+                    if not text.strip().startswith("{"):
+                        retry_wait = _GDELT_RETRY_DELAYS[attempt] if attempt < len(_GDELT_RETRY_DELAYS) else None
+                        if retry_wait is not None:
+                            logger.warning(
+                                f"GDELT {mode} soft-throttle (non-JSON 200) for query={query!r}: "
+                                f"{text[:80]!r} — retrying in {retry_wait}s (attempt {attempt + 1}/{max_attempts})"
+                            )
+                            await asyncio.sleep(retry_wait)
+                            continue
+                        logger.warning(
+                            f"GDELT {mode} soft-throttle for query={query!r}: {text[:80]!r} — giving up"
+                        )
+                        return None
+
+                    try:
+                        return json.loads(text)
+                    except json.JSONDecodeError:
+                        logger.warning(f"GDELT {mode} JSON parse error for query={query!r} — not retrying")
+                        return None
+
+            except Exception as exc:
+                logger.warning(f"GDELT {mode} error for query={query!r}: {exc}")
+                return None
+
+    return None  # exhausted all attempts
 
 
 def _parse_gdelt_timeline(volume_json: Optional[Dict], tone_json: Optional[Dict]) -> Dict:
@@ -2542,101 +2581,80 @@ async def get_forgotten_crises():
 
 # ── #7 GDELT Alert Ticker ─────────────────────────────────────────────────────
 
-# Short-lived cache — refreshed every 15 minutes via the 15-min scheduler job
-# added in startup_event below.  Structure: list of article dicts.
+# Refreshed as part of the hourly refresh_all_data() cycle (not a separate
+# 15-minute job).  Using the same rate-limited _gdelt_fetch_mode keeps all
+# GDELT requests serialised through the global rate lock.
 _gdelt_alerts_cache: List[Dict] = []
 _gdelt_alerts_cache_ts: Optional[datetime] = None
-_ALERTS_CACHE_TTL_MINUTES = 15
+
+# Top-5 conflicts by severity — used for the artlist query to keep the query
+# string short and avoid hitting GDELT's per-query complexity limits.
+_ALERTS_QUERY_COUNTRIES = ["Ukraine", "Gaza/Palestine", "Sudan", "Myanmar", "Yemen"]
 
 
 async def fetch_gdelt_alerts() -> List[Dict]:
-    """Fetch the most-negative articles across all tracked conflicts.
+    """Fetch the most-negative recent articles for the top tracked conflicts.
 
-    Uses GDELT DOC 2.0 `mode=artlist` with tone threshold filtering.
-    Returns up to 40 articles sorted by tone ascending (most negative first).
-    Results are cached in _gdelt_alerts_cache for 15 minutes.
+    Uses GDELT DOC 2.0 `mode=artlist` routed through the global rate-limiter
+    (_gdelt_fetch_mode).  Fetches one query per conflict country and merges
+    results, filtering to tone ≤ -4.  Called from refresh_all_data() hourly.
     """
     global _gdelt_alerts_cache, _gdelt_alerts_cache_ts
 
-    # Combined query across all tracked conflicts
-    combined_query = " OR ".join(
-        f"({q})" for q in GDELT_QUERY_MAP.values()
-    )
-    # Restrict to strongly negative articles (tone < -5 in GDELT scale)
-    # GDELT artlist mode doesn't support a direct tone filter in the query string,
-    # so we fetch the most recent 7-day articles and filter by tone on our side.
-    params = {
-        "query":    combined_query,
-        "mode":     "artlist",
-        "timespan": "3d",    # Last 3 days — keeps the list fresh
-        "maxrecords": "75",
-        "format":   "json",
-    }
+    all_articles: List[Dict] = []
 
-    articles: List[Dict] = []
-    try:
-        async with aiohttp.ClientSession(headers={"User-Agent": "WatchTower/1.0"}) as session:
-            async with session.get(
-                GDELT_DOC_API,
-                params=params,
-                timeout=aiohttp.ClientTimeout(total=20),
-            ) as resp:
-                if resp.status != 200:
-                    logger.warning(f"GDELT artlist HTTP {resp.status}")
-                    return _gdelt_alerts_cache  # return stale on error
-                text = await resp.text()
-                try:
-                    data = json.loads(text)
-                except json.JSONDecodeError:
-                    logger.warning("GDELT artlist returned non-JSON")
-                    return _gdelt_alerts_cache
-
-        raw_articles = data.get("articles", [])
-        for art in raw_articles:
-            tone = art.get("tone")
-            try:
-                tone_val = float(tone) if tone is not None else 0.0
-            except (ValueError, TypeError):
-                tone_val = 0.0
-            # Filter: only strongly negative articles (tone <= -4)
-            if tone_val > -4.0:
+    async with aiohttp.ClientSession(headers={"User-Agent": "WatchTower/1.0"}) as session:
+        for country in _ALERTS_QUERY_COUNTRIES:
+            query = GDELT_QUERY_MAP.get(country)
+            if not query:
                 continue
-            articles.append({
-                "title":       art.get("title", "").strip(),
-                "url":         art.get("url", ""),
-                "source":      art.get("domain", art.get("seendate", "")),
-                "seendate":    art.get("seendate", ""),
-                "tone":        round(tone_val, 2),
-                "language":    art.get("language", "English"),
-            })
+            # _gdelt_fetch_mode enforces the global rate lock (12s gap)
+            data = await _gdelt_fetch_mode(session, query, "artlist", timespan="1d")
+            if not data:
+                continue
+            for art in data.get("articles", []):
+                tone = art.get("tone")
+                try:
+                    tone_val = float(tone) if tone is not None else 0.0
+                except (ValueError, TypeError):
+                    tone_val = 0.0
+                if tone_val > -4.0:
+                    continue
+                all_articles.append({
+                    "title":    (art.get("title") or "").strip(),
+                    "url":      art.get("url", ""),
+                    "source":   art.get("domain", ""),
+                    "seendate": art.get("seendate", ""),
+                    "tone":     round(tone_val, 2),
+                    "country":  country,
+                    "language": art.get("language", "English"),
+                })
 
-        # Sort most-negative first
-        articles.sort(key=lambda a: a["tone"])
-        articles = articles[:40]
+    # Deduplicate by URL, sort most-negative first, keep top 40
+    seen: set = set()
+    unique: List[Dict] = []
+    for art in sorted(all_articles, key=lambda a: a["tone"]):
+        if art["url"] not in seen:
+            seen.add(art["url"])
+            unique.append(art)
+        if len(unique) >= 40:
+            break
 
-    except Exception as exc:
-        logger.warning(f"GDELT alerts fetch error: {exc}")
-        return _gdelt_alerts_cache  # return stale cache on error
-
-    _gdelt_alerts_cache = articles
+    _gdelt_alerts_cache = unique
     _gdelt_alerts_cache_ts = datetime.now(timezone.utc)
-    logger.info(f"GDELT alerts cache updated: {len(articles)} articles")
-    return articles
+    logger.info(f"GDELT alerts cache updated: {len(unique)} articles")
+    return unique
 
 
 @api_router.get("/gdelt-alerts")
 async def get_gdelt_alerts():
-    """Return the most-negative recent articles across all tracked conflicts.
+    """Return the most-negative recent articles across the top tracked conflicts.
 
-    Served from a 15-minute in-memory cache populated by a dedicated scheduler
-    job.  On cache miss (backend restart) the fetch runs inline.
+    Served from the hourly-refreshed in-memory cache.  Returns stale data
+    if the cache is cold rather than triggering a live fetch (which would
+    consume GDELT rate-limit budget mid-session).
     """
-    now = datetime.now(timezone.utc)
-    cache_stale = (
-        not _gdelt_alerts_cache_ts
-        or (now - _gdelt_alerts_cache_ts).total_seconds() > _ALERTS_CACHE_TTL_MINUTES * 60
-    )
-    if cache_stale or not _gdelt_alerts_cache:
+    if not _gdelt_alerts_cache:
         try:
             await fetch_gdelt_alerts()
         except Exception as exc:
@@ -2872,8 +2890,6 @@ async def startup_event():
     await refresh_all_data()
     # Refresh from primary sources every hour
     scheduler.add_job(refresh_all_data, 'interval', hours=1)
-    # GDELT alert ticker refreshes every 15 minutes (independent of hourly refresh)
-    scheduler.add_job(fetch_gdelt_alerts, 'interval', minutes=15)
     scheduler.start()
     logger.info("Scheduler started — data will refresh from primary sources every hour")
 

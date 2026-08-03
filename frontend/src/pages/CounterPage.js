@@ -495,6 +495,9 @@ export default function CounterPage() {
   const mainCounterRef = useRef(null);
   const childCounterRef = useRef(null);
   const tickRef = useRef(null); // { total, childTotal, totalDailyRate, childDailyRateTotal }
+  // Tracks the last backend fetched_at seen — used by the smart poll to detect
+  // when refresh_all_data() has fired without hammering /api/conflicts.
+  const lastFetchedAt = useRef(null);
 
   // ── Animation ──────────────────────────────────────────────────────────────
   const animateCounter = useCallback((ref, from, to, duration = 1200) => {
@@ -519,7 +522,12 @@ export default function CounterPage() {
       const prevChildTotal = tickRef.current?.childTotal ?? 0;
 
       setData(d);
-      if (d.sourcesUpdatedAt) setSourcesUpdatedAt(d.sourcesUpdatedAt);
+      if (d.sourcesUpdatedAt) {
+        setSourcesUpdatedAt(d.sourcesUpdatedAt);
+        // Seed the smart-poll baseline so the first 60s check doesn't
+        // immediately re-fire fetchAndRender against data we just loaded.
+        lastFetchedAt.current = d.sourcesUpdatedAt.toISOString();
+      }
       setStatus('live');
 
       // Sync tick ref
@@ -540,10 +548,28 @@ export default function CounterPage() {
     }
   }, [animateCounter]);
 
-  // ── Mount: initial fetch + 1h refresh ─────────────────────────────────────
+  // ── Mount: initial fetch + smart poll ─────────────────────────────────────
+  // On mount, fetch immediately. Then every 60s check /api/last-update (cheap
+  // single-doc read). Only call fetchAndRender() when fetched_at has changed,
+  // meaning the backend's hourly refresh_all_data() just completed. This keeps
+  // the counter in sync within ~60s of new data without a fixed 1h wait.
   useEffect(() => {
     fetchAndRender();
-    const id = setInterval(fetchAndRender, 3_600_000);
+
+    const checkForUpdates = async () => {
+      try {
+        const { data: lu } = await axios.get(`${BACKEND_URL}/api/last-update`);
+        const fetchedAt = lu?.fetched_at ?? null;
+        if (fetchedAt && fetchedAt !== lastFetchedAt.current) {
+          lastFetchedAt.current = fetchedAt;
+          fetchAndRender();
+        }
+      } catch {
+        // Non-fatal — next tick will retry
+      }
+    };
+
+    const id = setInterval(checkForUpdates, 60_000);
     return () => clearInterval(id);
   }, [fetchAndRender]);
 
