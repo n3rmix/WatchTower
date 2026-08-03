@@ -25,6 +25,8 @@ function toneColor(tone) {
 }
 
 function TonePill({ tone }) {
+  // tone is null when articles come from RSS (no sentiment signal)
+  if (tone == null) return null;
   const color = toneColor(tone);
   return (
     <span
