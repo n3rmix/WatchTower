@@ -2453,18 +2453,22 @@ def _parse_gdelt_gkg_csv_sync(data: bytes) -> List[Dict]:
     Each returned dict:  {country, date (YYYY-MM-DD), themes: {display_theme: count}}
     """
     rows: List[Dict] = []
+    total_rows = 0
+    country_hits: Dict[str, int] = {}   # FIPS codes seen, for diagnostics
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
             csv_name = next(
                 (n for n in zf.namelist() if n.upper().endswith('.CSV')),
                 zf.namelist()[0],
             )
+            logger.info(f"GDELT GKG parser: opened {csv_name} from zip")
             with zf.open(csv_name) as f:
                 reader = csv.reader(
                     io.TextIOWrapper(f, encoding='utf-8', errors='replace'),
                     delimiter='\t',
                 )
                 for row in reader:
+                    total_rows += 1
                     if len(row) <= max(_GKG_LOCS, _GKG_THEMES, _GKG_DATE):
                         continue
 
@@ -2473,9 +2477,13 @@ def _parse_gdelt_gkg_csv_sync(data: bytes) -> List[Dict]:
                     for loc_record in row[_GKG_LOCS].split(";"):
                         parts = loc_record.split("#")
                         if len(parts) >= 3:
-                            ctry = _FIPS_TO_COUNTRY.get(parts[2])
+                            fips = parts[2]
+                            ctry = _FIPS_TO_COUNTRY.get(fips)
                             if ctry:
                                 matched_countries.add(ctry)
+                            # Diagnostic: count all 2-char FIPS codes we see
+                            if len(fips) == 2:
+                                country_hits[fips] = country_hits.get(fips, 0) + 1
                     if not matched_countries:
                         continue
 
@@ -2503,6 +2511,13 @@ def _parse_gdelt_gkg_csv_sync(data: bytes) -> List[Dict]:
                         rows.append({"country": country, "date": date, "themes": theme_counts})
     except Exception as exc:
         logger.warning(f"GDELT GKG CSV parse error: {exc}")
+
+    # Log diagnostics so we can diagnose FIPS mismatches
+    top_fips = sorted(country_hits.items(), key=lambda x: -x[1])[:10]
+    logger.info(
+        f"GDELT GKG parser: {total_rows} total rows, {len(rows)} matched. "
+        f"Top FIPS codes seen: {top_fips}"
+    )
     return rows
 
 
@@ -2780,11 +2795,13 @@ async def fetch_gdelt_csv_tick() -> None:
         for line in text.strip().splitlines():
             parts = line.split()
             if len(parts) >= 3:
-                if parts[2].endswith(".export.CSV.zip"):
+                url_lower = parts[2].lower()
+                if url_lower.endswith(".export.csv.zip"):
                     csv_url = parts[2]
-                elif parts[2].endswith(".gkg.csv.zip"):
+                elif url_lower.endswith(".gkg.csv.zip"):
                     gkg_url = parts[2]
 
+        logger.info(f"GDELT lastupdate.txt parsed: events={'found' if csv_url else 'MISSING'}, gkg={'found' if gkg_url else 'MISSING'}")
         if not csv_url:
             logger.warning("GDELT lastupdate.txt: no .export.CSV.zip URL found")
             return
@@ -2810,15 +2827,18 @@ async def fetch_gdelt_csv_tick() -> None:
         gkg_data: Optional[bytes] = None
         if gkg_url and file_ts not in _gdelt_gkg_seen:
             try:
-                async with session.get(gkg_url, timeout=aiohttp.ClientTimeout(total=120)) as resp:
+                async with session.get(gkg_url, timeout=aiohttp.ClientTimeout(total=300)) as resp:
                     if resp.status == 200:
                         gkg_data = await resp.read()
+                        logger.info(f"GDELT GKG CSV {file_ts} downloaded: {len(gkg_data) / 1024:.0f} KB")
                     else:
                         logger.warning(f"GDELT GKG CSV {file_ts} HTTP {resp.status}")
             except Exception as exc:
                 logger.warning(f"GDELT GKG CSV {file_ts} download failed: {exc}")
         elif not gkg_url:
-            logger.debug("GDELT lastupdate.txt: no .gkg.csv.zip URL found")
+            logger.warning("GDELT lastupdate.txt: no .gkg.csv.zip URL — themes/diplomacy will not update")
+        else:
+            logger.debug(f"GDELT GKG CSV {file_ts} already processed this session — skipping")
 
     loop = asyncio.get_event_loop()
 
@@ -2868,7 +2888,7 @@ async def fetch_gdelt_csv_tick() -> None:
                 f"GDELT GKG tick {file_ts}: {len(gkg_rows)} theme-rows upserted"
             )
         else:
-            logger.debug(f"GDELT GKG tick {file_ts}: no rows matched our countries/themes")
+            logger.warning(f"GDELT GKG tick {file_ts}: parser returned 0 rows — no articles matched our FIPS codes + themes")
 
 
 async def fetch_gdelt_data() -> Dict[str, Dict]:
