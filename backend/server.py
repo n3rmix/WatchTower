@@ -2916,7 +2916,7 @@ async def get_gdelt_alerts():
 # scheduler) because theme queries are slow and per-country.
 _gdelt_themes_cache: Dict[str, Dict] = {}   # country -> {themes: {name: [values]}, ...}
 _gdelt_themes_cache_ts: Dict[str, datetime] = {}
-_THEMES_CACHE_TTL_HOURS = 6
+_THEMES_CACHE_TTL_HOURS = 24   # bumped from 6h — themes change slowly and DOC 2.0 is rate-limited
 
 # Humanitarian theme tags to track in GDELT GKG (DOC 2.0 timelinetheme mode).
 # These are GDELT GKG 2.0 theme codes used in the `mode=timelinetheme` queries.
@@ -3013,7 +3013,7 @@ async def get_gdelt_themes(country: str = "Ukraine"):
 
 _gdelt_diplomacy_cache: Dict[str, Dict] = {}   # country -> payload
 _gdelt_diplomacy_cache_ts: Dict[str, datetime] = {}
-_DIPLOMACY_CACHE_TTL_HOURS = 6
+_DIPLOMACY_CACHE_TTL_HOURS = 24   # bumped from 6h — same reasoning as themes TTL
 
 # Theme proxies for diplomacy vs violence in GDELT DOC 2.0 GKG
 DIPLOMACY_THEMES  = ["PEACE", "CEASEFIRE", "NEGOTIATION", "DIPLOMACY"]
