@@ -2916,6 +2916,7 @@ async def get_gdelt_alerts():
 # scheduler) because theme queries are slow and per-country.
 _gdelt_themes_cache: Dict[str, Dict] = {}   # country -> {themes: {name: [values]}, ...}
 _gdelt_themes_cache_ts: Dict[str, datetime] = {}
+_gdelt_themes_fetching: set = set()   # countries with an in-flight background refresh
 _THEMES_CACHE_TTL_HOURS = 24   # bumped from 6h — themes change slowly and DOC 2.0 is rate-limited
 
 # Humanitarian theme tags to track in GDELT GKG (DOC 2.0 timelinetheme mode).
@@ -2995,21 +2996,26 @@ async def get_gdelt_themes(country: str = "Ukraine"):
     )
 
     async def _refresh():
+        _gdelt_themes_fetching.add(country)
         try:
             result = await fetch_gdelt_themes_for_country(country)
             _gdelt_themes_cache[country] = result
             _gdelt_themes_cache_ts[country] = datetime.now(timezone.utc)
         except Exception as exc:
             logger.warning(f"GDELT themes background refresh failed for {country}: {exc}")
+        finally:
+            _gdelt_themes_fetching.discard(country)
 
     if cache_stale or country not in _gdelt_themes_cache:
         if country not in _gdelt_themes_cache:
-            # No data at all — kick off background fetch and return 202
-            asyncio.create_task(_refresh())
+            # No data yet — fire ONE background fetch (guard prevents duplicates)
+            if country not in _gdelt_themes_fetching:
+                asyncio.create_task(_refresh())
             return {"fetched_at": None, "source": "GDELT DOC 2.0", "pending": True,
                     "country": country, "timelines": {}, "radar_values": {}, "themes": HUMANITARIAN_THEMES}
-        # Stale but present — return immediately, refresh in background
-        asyncio.create_task(_refresh())
+        # Stale but present — return immediately, refresh once in background
+        if country not in _gdelt_themes_fetching:
+            asyncio.create_task(_refresh())
 
     payload = _gdelt_themes_cache[country]
     return {
@@ -3023,6 +3029,7 @@ async def get_gdelt_themes(country: str = "Ukraine"):
 
 _gdelt_diplomacy_cache: Dict[str, Dict] = {}   # country -> payload
 _gdelt_diplomacy_cache_ts: Dict[str, datetime] = {}
+_gdelt_diplomacy_fetching: set = set()   # countries with an in-flight background refresh
 _DIPLOMACY_CACHE_TTL_HOURS = 24   # bumped from 6h — same reasoning as themes TTL
 
 # Theme proxies for diplomacy vs violence in GDELT DOC 2.0 GKG
@@ -3108,22 +3115,27 @@ async def get_gdelt_diplomacy(country: str = "Ukraine"):
     )
 
     async def _refresh():
+        _gdelt_diplomacy_fetching.add(country)
         try:
             result = await fetch_gdelt_diplomacy_for_country(country)
             _gdelt_diplomacy_cache[country] = result
             _gdelt_diplomacy_cache_ts[country] = datetime.now(timezone.utc)
         except Exception as exc:
             logger.warning(f"GDELT diplomacy background refresh failed for {country}: {exc}")
+        finally:
+            _gdelt_diplomacy_fetching.discard(country)
 
     if cache_stale or country not in _gdelt_diplomacy_cache:
         if country not in _gdelt_diplomacy_cache:
-            # No data yet — fire background fetch and return empty payload
-            asyncio.create_task(_refresh())
+            # No data yet — fire ONE background fetch (guard prevents duplicates)
+            if country not in _gdelt_diplomacy_fetching:
+                asyncio.create_task(_refresh())
             return {"fetched_at": None, "source": "GDELT DOC 2.0", "pending": True,
                     "country": country, "timelines": {}, "pulse_index": None,
                     "diplomacy_score": None, "violence_score": None}
-        # Stale but present — return immediately, refresh in background
-        asyncio.create_task(_refresh())
+        # Stale but present — return immediately, refresh once in background
+        if country not in _gdelt_diplomacy_fetching:
+            asyncio.create_task(_refresh())
 
     payload = _gdelt_diplomacy_cache[country]
     return {
