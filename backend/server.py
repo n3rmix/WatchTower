@@ -16,6 +16,11 @@ import aiohttp
 from bs4 import BeautifulSoup
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import asyncio
+import zipfile
+import io
+import csv
+from collections import defaultdict
+from pymongo import UpdateOne
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -1030,14 +1035,9 @@ async def refresh_all_data():
     except Exception as e:
         logger.error(f"Error during data refresh: {e}")
 
-    # GDELT is media-derived context, kept in its own cache and fetched last
-    # so a GDELT outage cannot delay casualty data being persisted.
-    # fetch_gdelt_data + fetch_gdelt_alerts share the global rate lock so all
-    # requests are serialised — no concurrent hits to api.gdeltproject.org.
-    try:
-        await fetch_gdelt_data()
-    except Exception as exc:
-        logger.warning(f"GDELT timeline refresh failed (non-fatal): {exc}")
+    # GDELT is handled by the dedicated 15-minute fetch_gdelt_csv_tick() scheduler
+    # job, which also rebuilds _gdelt_cache after each tick.  The hourly refresh
+    # does not need to call it — alerts are now sourced from news_articles (RSS).
     try:
         await fetch_gdelt_alerts()
     except Exception as exc:
@@ -2229,8 +2229,56 @@ GDELT_QUERY_MAP: Dict[str, str] = {
     'Haiti':          '(Haiti gang OR "Haiti violence" OR "Haiti conflict")',
 }
 
+# ── GDELT Events 2.0 CSV pipeline ─────────────────────────────────────────────
+#
+# Instead of the rate-limited DOC 2.0 API, we consume the raw 15-minute Events
+# CSV zip files published at data.gdeltproject.org/gdeltv2/.  These are public,
+# unauthenticated bulk downloads with no rate limits.  Each file is ~2-5 MB
+# compressed and covers all global events in a 15-minute window.
+#
+# We filter to the ~11 FIPS country codes that correspond to our tracked
+# conflicts, aggregate article counts and average tone per (country, date), and
+# persist the result in the `gdelt_ticks` MongoDB collection with a 32-day TTL.
+# The in-memory `_gdelt_cache` is rebuilt from MongoDB by `_build_gdelt_cache_from_db()`.
+
+GDELT_LASTUPDATE_URL = "http://data.gdeltproject.org/gdeltv2/lastupdate.txt"
+
+# FIPS 2-letter country codes used in GDELT Events ActionGeo_CountryCode.
+# Multiple codes per entry where a conflict spans ambiguous territory.
+GDELT_FIPS_MAP: Dict[str, List[str]] = {
+    'Ukraine':        ['UP'],
+    'Gaza/Palestine': ['GZ'],
+    'Sudan':          ['SU'],
+    'Myanmar':        ['BM'],
+    'Syria':          ['SY'],
+    'Yemen':          ['YM'],
+    'Ethiopia':       ['ET'],
+    'DRC (Congo)':    ['CG'],
+    'Iran':           ['IR'],
+    'Lebanon':        ['LE'],
+    'Haiti':          ['HA'],
+}
+
+# Reverse map: FIPS code → WatchTower country name
+_FIPS_TO_COUNTRY: Dict[str, str] = {
+    fips: country
+    for country, codes in GDELT_FIPS_MAP.items()
+    for fips in codes
+}
+
+# GDELT 2.0 Events CSV column indices (0-based, tab-separated, no header row).
+# Source: GDELT 2.0 Event Database Codebook (fields 1-61 → indices 0-60).
+_GCOL_DATE    = 1   # SQLDATE: YYYYMMDD
+_GCOL_N_ART   = 33  # NumArticles: article count referencing this event
+_GCOL_TONE    = 34  # AvgTone: average tone across all articles (-100 to +100)
+_GCOL_CTRY    = 53  # ActionGeo_CountryCode: FIPS 2-letter code of action location
+
+# Tracks file timestamps (YYYYMMDDHHMMSS) already processed this session to
+# prevent double-counting on scheduler overlap or backend restart within TTL.
+_gdelt_csv_seen: set = set()
+
 # In-memory cache mirroring the pattern used by _treemap_cache. Populated by
-# the hourly scheduler; served straight from the API endpoints.
+# the 15-minute CSV scheduler job; served straight from the API endpoints.
 _gdelt_cache: Dict[str, Dict] = {}   # country -> {volume, tone, dates, latest_*, ...}
 _gdelt_cache_ts: Optional[datetime] = None
 
@@ -2332,107 +2380,277 @@ async def _gdelt_fetch_mode(
     return None  # exhausted all attempts
 
 
-def _parse_gdelt_timeline(volume_json: Optional[Dict], tone_json: Optional[Dict]) -> Dict:
-    """Convert GDELT timeline JSON blobs into a flat, chart-ready payload.
+def _parse_gdelt_events_csv_sync(data: bytes) -> List[Dict]:
+    """Parse a GDELT 2.0 Events CSV zip (synchronous, runs in thread-pool executor).
 
-    Both `timelinevolraw` and `timelinetone` return `{"timeline": [{"data": [{"date","value"}]}]}`.
-    Dates in DOC 2.0 come as `YYYYMMDDTHHMMSSZ`; we normalise to `YYYY-MM-DD`.
+    Decompresses the zip, iterates rows, and returns only the rows matching
+    our tracked FIPS country codes.  Each returned dict has:
+      country, date (YYYY-MM-DD), n_art (int), tone (float).
     """
-    def _extract(js: Optional[Dict]):
-        """Return (values_by_day, counts_by_day) or ({}, {}) if no data."""
-        if not js or "timeline" not in js or not js["timeline"]:
-            return {}, {}
-        series = js["timeline"][0].get("data", [])
-        # GDELT returns hourly buckets for short timespans (< 30d) and daily
-        # buckets for longer spans.  We always aggregate to daily by summing
-        # volume and averaging tone across intra-day buckets.
-        counts: Dict[str, int]   = {}   # day → number of hourly buckets (for tone avg)
-        out:    Dict[str, float] = {}
-        for pt in series:
-            raw = pt.get("date", "")
-            try:
-                day = f"{raw[0:4]}-{raw[4:6]}-{raw[6:8]}"
-                val = float(pt.get("value") or 0)
-                out[day]    = out.get(day, 0.0) + val
-                counts[day] = counts.get(day, 0) + 1
-            except Exception:
-                continue
-        return out, counts
+    rows: List[Dict] = []
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            csv_name = next(
+                (n for n in zf.namelist() if n.upper().endswith('.CSV')),
+                zf.namelist()[0],
+            )
+            with zf.open(csv_name) as f:
+                reader = csv.reader(
+                    io.TextIOWrapper(f, encoding='utf-8', errors='replace'),
+                    delimiter='\t',
+                )
+                for row in reader:
+                    if len(row) <= _GCOL_CTRY:
+                        continue
+                    country = _FIPS_TO_COUNTRY.get(row[_GCOL_CTRY])
+                    if not country:
+                        continue
+                    try:
+                        raw_date = row[_GCOL_DATE]
+                        date  = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:8]}"
+                        n_art = int(float(row[_GCOL_N_ART] or 0))
+                        tone  = float(row[_GCOL_TONE] or 0)
+                    except (ValueError, IndexError):
+                        continue
+                    rows.append({"country": country, "date": date, "n_art": n_art, "tone": tone})
+    except Exception as exc:
+        logger.warning(f"GDELT CSV parse error: {exc}")
+    return rows
 
-    vol_raw, vol_counts   = _extract(volume_json)
-    tone_raw, tone_counts = _extract(tone_json)
 
-    # For tone, compute the daily average rather than summing.
-    tone_by_day: Dict[str, float] = {
-        d: round(v / tone_counts[d], 4) if tone_counts.get(d, 0) > 0 else v
-        for d, v in tone_raw.items()
-    }
+async def _upsert_gdelt_ticks(file_ts: str, rows: List[Dict]) -> None:
+    """Aggregate parsed rows from one 15-min file and upsert into `gdelt_ticks`.
 
-    dates = sorted(set(vol_raw) | set(tone_by_day))
-    return {
-        "dates":  dates,
-        "volume": [vol_raw.get(d, 0.0)      for d in dates],
-        "tone":   [tone_by_day.get(d, 0.0)  for d in dates],
-    }
+    One document per (file_ts, country) — idempotent so re-runs are safe.
+    Tone is stored as a running sum so the daily average can be computed
+    correctly when aggregating multiple 15-min slices into a single day bucket.
+    """
+    agg: Dict[tuple, Dict] = defaultdict(
+        lambda: {"article_count": 0, "tone_sum": 0.0, "event_count": 0, "date": ""}
+    )
+    for r in rows:
+        key = (r["country"], r["date"])
+        agg[key]["article_count"] += r["n_art"]
+        agg[key]["tone_sum"]      += r["tone"]
+        agg[key]["event_count"]   += 1
+        agg[key]["date"]           = r["date"]
+
+    expires_at = datetime.now(timezone.utc) + timedelta(days=32)
+    ops = [
+        UpdateOne(
+            {"file_ts": file_ts, "country": country},
+            {"$setOnInsert": {
+                "file_ts":       file_ts,
+                "country":       country,
+                "date":          vals["date"],
+                "article_count": vals["article_count"],
+                "tone_sum":      vals["tone_sum"],
+                "event_count":   vals["event_count"],
+                "expires_at":    expires_at,
+            }},
+            upsert=True,
+        )
+        for (country, _date), vals in agg.items()
+    ]
+    if ops:
+        await db.gdelt_ticks.bulk_write(ops, ordered=False)
+
+
+async def _build_gdelt_cache_from_db() -> Dict[str, Dict]:
+    """Aggregate the last 30 days of `gdelt_ticks` into the `_gdelt_cache` structure.
+
+    Returns the same shape as the old DOC 2.0 fetch so all existing endpoints
+    remain unchanged:
+      {country: {dates, volume, tone, latest_volume, avg_volume_7d, avg_tone_7d,
+                 volume_delta_pct, tone_delta, centroid}}
+    """
+    cutoff_date = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%d")
+    pipeline = [
+        {"$match": {"date": {"$gte": cutoff_date}}},
+        {"$group": {
+            "_id":           {"country": "$country", "date": "$date"},
+            "article_count": {"$sum": "$article_count"},
+            "tone_sum":      {"$sum": "$tone_sum"},
+            "event_count":   {"$sum": "$event_count"},
+        }},
+        {"$sort": {"_id.date": 1}},
+    ]
+    try:
+        raw = await db.gdelt_ticks.aggregate(pipeline).to_list(length=20000)
+    except Exception as exc:
+        logger.warning(f"GDELT cache DB aggregate failed: {exc}")
+        return {}
+
+    country_days: Dict[str, Dict[str, Dict]] = defaultdict(dict)
+    for row in raw:
+        country     = row["_id"]["country"]
+        date        = row["_id"]["date"]
+        event_count = row["event_count"] or 1
+        avg_tone    = row["tone_sum"] / event_count
+        country_days[country][date] = {
+            "volume": row["article_count"],
+            "tone":   round(avg_tone, 4),
+        }
+
+    results: Dict[str, Dict] = {}
+    for country in GDELT_FIPS_MAP:
+        day_map = country_days.get(country, {})
+        dates   = sorted(day_map)
+        if not dates:
+            continue
+
+        volumes = [day_map[d]["volume"] for d in dates]
+        tones   = [day_map[d]["tone"]   for d in dates]
+
+        last7_vol  = volumes[-7:]    if len(volumes) >= 1  else []
+        last7_tone = tones[-7:]      if len(tones)   >= 1  else []
+        prev7_vol  = volumes[-14:-7] if len(volumes) >= 14 else []
+        prev7_tone = tones[-14:-7]   if len(tones)   >= 14 else []
+
+        avg_volume_7d = round(sum(last7_vol)  / len(last7_vol),  4) if last7_vol  else 0.0
+        avg_tone_7d   = round(sum(last7_tone) / len(last7_tone), 4) if last7_tone else 0.0
+
+        volume_delta_pct: Optional[float] = None
+        if prev7_vol and sum(prev7_vol) > 0:
+            volume_delta_pct = round(
+                ((sum(last7_vol) - sum(prev7_vol)) / sum(prev7_vol)) * 100, 1
+            )
+        tone_delta: Optional[float] = None
+        if prev7_tone:
+            tone_delta = round(avg_tone_7d - (sum(prev7_tone) / len(prev7_tone)), 3)
+
+        results[country] = {
+            "dates":            dates,
+            "volume":           volumes,
+            "tone":             tones,
+            "latest_volume":    round(volumes[-1], 4) if volumes else 0.0,
+            "avg_volume_7d":    avg_volume_7d,
+            "avg_tone_7d":      avg_tone_7d,
+            "volume_delta_pct": volume_delta_pct,
+            "tone_delta":       tone_delta,
+            "centroid":         list(GDELT_COUNTRY_CENTROIDS.get(country, (0.0, 0.0))),
+        }
+        logger.info(
+            f"GDELT CSV: {country} → volume7d={avg_volume_7d} tone7d={avg_tone_7d} "
+            f"Δvol={volume_delta_pct}% Δtone={tone_delta}"
+        )
+
+    return results
+
+
+async def fetch_gdelt_csv_tick() -> None:
+    """Download the latest GDELT 2.0 Events CSV, parse it, and upsert into MongoDB.
+
+    Called every 15 minutes by the scheduler.  `lastupdate.txt` exposes the URL
+    of the most recent 15-minute events zip.  File timestamps serve as idempotency
+    keys — a re-run within the same 15-minute window is a silent no-op.
+    After a successful upsert the in-memory `_gdelt_cache` is rebuilt so API
+    endpoints reflect the new data without waiting for the next hourly refresh.
+    """
+    global _gdelt_cache, _gdelt_cache_ts, _gdelt_csv_seen
+
+    async with aiohttp.ClientSession(headers={"User-Agent": "WatchTower/1.0"}) as session:
+        # ── 1. Discover the latest events CSV URL ──────────────────────────────
+        try:
+            async with session.get(
+                GDELT_LASTUPDATE_URL,
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                if resp.status != 200:
+                    logger.warning(f"GDELT lastupdate.txt HTTP {resp.status}")
+                    return
+                text = await resp.text()
+        except Exception as exc:
+            logger.warning(f"GDELT lastupdate.txt fetch failed: {exc}")
+            return
+
+        # Format: "<bytes> <md5> <url>" — one line per file type (export/mentions/gkg)
+        csv_url: Optional[str] = None
+        for line in text.strip().splitlines():
+            parts = line.split()
+            if len(parts) >= 3 and parts[2].endswith(".export.CSV.zip"):
+                csv_url = parts[2]
+                break
+
+        if not csv_url:
+            logger.warning("GDELT lastupdate.txt: no .export.CSV.zip URL found")
+            return
+
+        # 14-digit timestamp embedded in the filename (e.g. "20260803143000")
+        m = re.search(r'(\d{14})\.export\.CSV\.zip', csv_url)
+        file_ts = m.group(1) if m else csv_url
+
+        if file_ts in _gdelt_csv_seen:
+            logger.debug(f"GDELT CSV {file_ts} already processed — skipping")
+            return
+
+        # ── 2. Download the zip ────────────────────────────────────────────────
+        try:
+            async with session.get(
+                csv_url,
+                timeout=aiohttp.ClientTimeout(total=90),
+            ) as resp:
+                if resp.status != 200:
+                    logger.warning(f"GDELT CSV {file_ts} download HTTP {resp.status}")
+                    return
+                data = await resp.read()
+        except Exception as exc:
+            logger.warning(f"GDELT CSV {file_ts} download failed: {exc}")
+            return
+
+    # ── 3. Parse in thread pool (CPU-bound, keep event loop free) ─────────────
+    loop = asyncio.get_event_loop()
+    rows: List[Dict] = await loop.run_in_executor(
+        None, _parse_gdelt_events_csv_sync, data
+    )
+
+    # Mark as seen regardless — avoids hammering on parse errors
+    _gdelt_csv_seen.add(file_ts)
+    if len(_gdelt_csv_seen) > 1000:
+        _gdelt_csv_seen = set(list(_gdelt_csv_seen)[-500:])
+
+    if not rows:
+        return
+
+    # ── 4. Upsert into MongoDB ─────────────────────────────────────────────────
+    try:
+        await _upsert_gdelt_ticks(file_ts, rows)
+    except Exception as exc:
+        logger.warning(f"GDELT CSV {file_ts} DB upsert failed: {exc}")
+        return
+
+    # ── 5. Rebuild in-memory cache from 30-day window ─────────────────────────
+    results = await _build_gdelt_cache_from_db()
+    if results:
+        _gdelt_cache    = results
+        _gdelt_cache_ts = datetime.now(timezone.utc)
+        logger.info(
+            f"GDELT CSV tick {file_ts}: {len(rows)} events → "
+            f"cache rebuilt for {len(results)} countries"
+        )
+    else:
+        logger.warning(f"GDELT CSV tick {file_ts}: DB aggregate returned no data")
 
 
 async def fetch_gdelt_data() -> Dict[str, Dict]:
-    """Fetch GDELT 30-day volume + tone timelines for every tracked conflict.
+    """Rebuild the GDELT in-memory cache from accumulated CSV data in MongoDB.
 
-    Returns {country: {dates, volume, tone, latest_volume, avg_volume_7d, avg_tone_7d}}.
-    Results are cached in-memory (`_gdelt_cache`) and served by
-    `/api/gdelt-timeline` and `/api/live-events`.
+    Runs a CSV tick first to pick up the latest 15-min file, then aggregates
+    the full 30-day window from `gdelt_ticks`.  Called from `refresh_all_data()`
+    and on inline cache-miss in endpoints.
     """
     global _gdelt_cache, _gdelt_cache_ts
-    results: Dict[str, Dict] = {}
 
-    async with aiohttp.ClientSession(headers={"User-Agent": "WatchTower/1.0"}) as session:
-        for country, query in GDELT_QUERY_MAP.items():
-            # Sequential fetch (not asyncio.gather) so each request respects the
-            # global rate-lock — GDELT enforces one request per 5 seconds.
-            vol_json  = await _gdelt_fetch_mode(session, query, "timelinevolraw")
-            tone_json = await _gdelt_fetch_mode(session, query, "timelinetone")
-            parsed = _parse_gdelt_timeline(vol_json, tone_json)
+    await fetch_gdelt_csv_tick()
 
-            # Aggregate helpers used by the frontend widgets
-            vol_series = parsed["volume"]
-            tone_series = parsed["tone"]
-            last7_vol  = vol_series[-7:]  if len(vol_series)  >= 1 else []
-            last7_tone = tone_series[-7:] if len(tone_series) >= 1 else []
-            latest_volume  = vol_series[-1] if vol_series  else 0.0
-            avg_volume_7d  = round(sum(last7_vol)  / len(last7_vol),  4) if last7_vol  else 0.0
-            avg_tone_7d    = round(sum(last7_tone) / len(last7_tone), 4) if last7_tone else 0.0
+    # CSV tick may have found no new file — rebuild from whatever is in DB
+    if not _gdelt_cache:
+        results = await _build_gdelt_cache_from_db()
+        if results:
+            _gdelt_cache    = results
+            _gdelt_cache_ts = datetime.now(timezone.utc)
 
-            # Simple 7d vs prior-7d delta for the "escalating / de-escalating" badge
-            prev7_vol  = vol_series[-14:-7] if len(vol_series) >= 14 else []
-            prev7_tone = tone_series[-14:-7] if len(tone_series) >= 14 else []
-            volume_delta_pct: Optional[float] = None
-            if prev7_vol and sum(prev7_vol) > 0:
-                volume_delta_pct = round(
-                    ((sum(last7_vol) - sum(prev7_vol)) / sum(prev7_vol)) * 100, 1
-                )
-            tone_delta: Optional[float] = None
-            if prev7_tone:
-                tone_delta = round(avg_tone_7d - (sum(prev7_tone) / len(prev7_tone)), 3)
-
-            results[country] = {
-                **parsed,
-                "latest_volume":    round(latest_volume, 4),
-                "avg_volume_7d":    avg_volume_7d,
-                "avg_tone_7d":      avg_tone_7d,
-                "volume_delta_pct": volume_delta_pct,
-                "tone_delta":       tone_delta,
-                "centroid":         list(GDELT_COUNTRY_CENTROIDS.get(country, (0.0, 0.0))),
-            }
-            logger.info(
-                f"GDELT: {country} → volume7d={avg_volume_7d} tone7d={avg_tone_7d} "
-                f"Δvol={volume_delta_pct}% Δtone={tone_delta}"
-            )
-
-    _gdelt_cache = results
-    _gdelt_cache_ts = datetime.now(timezone.utc)
-    logger.info(f"GDELT cache updated: {len(results)}/{len(GDELT_QUERY_MAP)} conflicts")
-    return results
+    return _gdelt_cache
 
 
 @api_router.get("/gdelt-timeline")
@@ -2593,57 +2811,82 @@ _ALERTS_QUERY_COUNTRIES = ["Ukraine", "Gaza/Palestine", "Sudan", "Myanmar", "Yem
 
 
 async def fetch_gdelt_alerts() -> List[Dict]:
-    """Fetch the most-negative recent articles for the top tracked conflicts.
+    """Surface high-priority conflict articles from the existing RSS `news_articles` collection.
 
-    Uses GDELT DOC 2.0 `mode=artlist` routed through the global rate-limiter
-    (_gdelt_fetch_mode).  Fetches one query per conflict country and merges
-    results, filtering to tone ≤ -4.  Called from refresh_all_data() hourly.
+    Replaces the GDELT DOC 2.0 artlist mode — zero external API calls.  Articles
+    are matched to a conflict country by keyword scan of the title, then returned
+    in the same schema the frontend GdeltAlertTicker expects.  `tone` is set to
+    None (RSS feeds carry no tone signal).
     """
     global _gdelt_alerts_cache, _gdelt_alerts_cache_ts
 
-    all_articles: List[Dict] = []
+    # Keyword → WatchTower country name. Order matters: more-specific terms first.
+    ALERT_KEYWORDS: List[tuple] = [
+        ("Gaza",      "Gaza/Palestine"),
+        ("Hezbollah", "Lebanon"),
+        ("Lebanon",   "Lebanon"),
+        ("Houthi",    "Yemen"),
+        ("Yemen",     "Yemen"),
+        ("Tigray",    "Ethiopia"),
+        ("Ethiopia",  "Ethiopia"),
+        ("Myanmar",   "Myanmar"),
+        ("Burma",     "Myanmar"),
+        ("Sudan",     "Sudan"),
+        ("Ukraine",   "Ukraine"),
+        ("Russia",    "Ukraine"),
+        ("Syria",     "Syria"),
+        ("Congo",     "DRC (Congo)"),
+        ("DRC",       "DRC (Congo)"),
+        ("Haiti",     "Haiti"),
+        ("Iran",      "Iran"),
+    ]
 
-    async with aiohttp.ClientSession(headers={"User-Agent": "WatchTower/1.0"}) as session:
-        for country in _ALERTS_QUERY_COUNTRIES:
-            query = GDELT_QUERY_MAP.get(country)
-            if not query:
-                continue
-            # _gdelt_fetch_mode enforces the global rate lock (12s gap)
-            data = await _gdelt_fetch_mode(session, query, "artlist", timespan="1d")
-            if not data:
-                continue
-            for art in data.get("articles", []):
-                tone = art.get("tone")
-                try:
-                    tone_val = float(tone) if tone is not None else 0.0
-                except (ValueError, TypeError):
-                    tone_val = 0.0
-                if tone_val > -4.0:
-                    continue
-                all_articles.append({
-                    "title":    (art.get("title") or "").strip(),
-                    "url":      art.get("url", ""),
-                    "source":   art.get("domain", ""),
-                    "seendate": art.get("seendate", ""),
-                    "tone":     round(tone_val, 2),
-                    "country":  country,
-                    "language": art.get("language", "English"),
-                })
+    try:
+        articles = await db.news_articles.find(
+            {},
+            {"title": 1, "url": 1, "source": 1, "published": 1},
+        ).sort("published", -1).limit(400).to_list(length=400)
+    except Exception as exc:
+        logger.warning(f"GDELT alerts (RSS fallback): MongoDB fetch failed: {exc}")
+        _gdelt_alerts_cache_ts = datetime.now(timezone.utc)
+        return []
 
-    # Deduplicate by URL, sort most-negative first, keep top 40
-    seen: set = set()
-    unique: List[Dict] = []
-    for art in sorted(all_articles, key=lambda a: a["tone"]):
-        if art["url"] not in seen:
-            seen.add(art["url"])
-            unique.append(art)
-        if len(unique) >= 40:
+    results: List[Dict] = []
+    seen_urls: set = set()
+    for art in articles:
+        title = (art.get("title") or "").strip()
+        url   = art.get("url", "")
+        if not title or not url or url in seen_urls:
+            continue
+
+        title_upper = title.upper()
+        country: Optional[str] = None
+        for kw, cname in ALERT_KEYWORDS:
+            if kw.upper() in title_upper:
+                country = cname
+                break
+
+        if not country:
+            continue
+
+        seen_urls.add(url)
+        results.append({
+            "title":    title,
+            "url":      url,
+            "source":   art.get("source", ""),
+            "seendate": art.get("published", ""),
+            "tone":     None,   # RSS feeds carry no tone signal
+            "country":  country,
+            "language": "English",
+        })
+
+        if len(results) >= 40:
             break
 
-    _gdelt_alerts_cache = unique
+    _gdelt_alerts_cache    = results
     _gdelt_alerts_cache_ts = datetime.now(timezone.utc)
-    logger.info(f"GDELT alerts cache updated: {len(unique)} articles")
-    return unique
+    logger.info(f"GDELT alerts (RSS fallback): {len(results)} articles")
+    return results
 
 
 @api_router.get("/gdelt-alerts")
@@ -2885,13 +3128,40 @@ app.add_middleware(
 scheduler = AsyncIOScheduler()
 
 
+async def _ensure_gdelt_indexes() -> None:
+    """Create MongoDB indexes for the gdelt_ticks collection (idempotent)."""
+    try:
+        # TTL index: MongoDB auto-expires documents after expires_at
+        await db.gdelt_ticks.create_index("expires_at", expireAfterSeconds=0)
+        # Compound unique index for idempotent upserts
+        await db.gdelt_ticks.create_index(
+            [("file_ts", 1), ("country", 1)], unique=True
+        )
+        # Query index for the 30-day aggregate pipeline
+        await db.gdelt_ticks.create_index([("date", 1), ("country", 1)])
+        logger.info("gdelt_ticks indexes ensured")
+    except Exception as exc:
+        logger.warning(f"gdelt_ticks index creation failed (non-fatal): {exc}")
+
+
 @app.on_event("startup")
 async def startup_event():
+    # Ensure MongoDB indexes before first data load
+    await _ensure_gdelt_indexes()
     await refresh_all_data()
-    # Refresh from primary sources every hour
+    # Hourly refresh for casualty data, news, and treemap
     scheduler.add_job(refresh_all_data, 'interval', hours=1)
+    # 15-minute GDELT CSV tick — downloads latest events file, upserts to DB,
+    # rebuilds _gdelt_cache.  Runs independently of the hourly job so media
+    # attention signals stay current between casualty refreshes.
+    scheduler.add_job(fetch_gdelt_csv_tick, 'interval', minutes=15, id='gdelt_csv_tick')
     scheduler.start()
-    logger.info("Scheduler started — data will refresh from primary sources every hour")
+    logger.info(
+        "Scheduler started — casualty data refreshes hourly, "
+        "GDELT CSV pipeline refreshes every 15 minutes"
+    )
+    # Seed GDELT cache on startup (runs in background, doesn't block)
+    asyncio.create_task(fetch_gdelt_csv_tick())
 
 
 @app.on_event("shutdown")
