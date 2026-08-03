@@ -2999,8 +2999,15 @@ async def get_gdelt_themes(country: str = "Ukraine"):
         _gdelt_themes_fetching.add(country)
         try:
             result = await fetch_gdelt_themes_for_country(country)
+            fetched_at = datetime.now(timezone.utc)
             _gdelt_themes_cache[country] = result
-            _gdelt_themes_cache_ts[country] = datetime.now(timezone.utc)
+            _gdelt_themes_cache_ts[country] = fetched_at
+            # Persist to MongoDB so restarts reuse this data
+            await db.gdelt_feature_cache.update_one(
+                {"type": "themes", "country": country},
+                {"$set": {"payload": result, "fetched_at": fetched_at}},
+                upsert=True,
+            )
         except Exception as exc:
             logger.warning(f"GDELT themes background refresh failed for {country}: {exc}")
         finally:
@@ -3118,8 +3125,15 @@ async def get_gdelt_diplomacy(country: str = "Ukraine"):
         _gdelt_diplomacy_fetching.add(country)
         try:
             result = await fetch_gdelt_diplomacy_for_country(country)
+            fetched_at = datetime.now(timezone.utc)
             _gdelt_diplomacy_cache[country] = result
-            _gdelt_diplomacy_cache_ts[country] = datetime.now(timezone.utc)
+            _gdelt_diplomacy_cache_ts[country] = fetched_at
+            # Persist to MongoDB so restarts reuse this data
+            await db.gdelt_feature_cache.update_one(
+                {"type": "diplomacy", "country": country},
+                {"$set": {"payload": result, "fetched_at": fetched_at}},
+                upsert=True,
+            )
         except Exception as exc:
             logger.warning(f"GDELT diplomacy background refresh failed for {country}: {exc}")
         finally:
@@ -3161,6 +3175,43 @@ scheduler = AsyncIOScheduler()
 
 
 
+async def _load_gdelt_feature_caches() -> None:
+    """Restore themes + diplomacy caches from MongoDB on startup.
+
+    Documents in `gdelt_feature_cache` are written by the background _refresh()
+    tasks and survive server restarts, avoiding DOC 2.0 re-fetches.
+    Only loads documents whose fetched_at is less than the TTL age.
+    """
+    global _gdelt_themes_cache, _gdelt_themes_cache_ts
+    global _gdelt_diplomacy_cache, _gdelt_diplomacy_cache_ts
+
+    now = datetime.now(timezone.utc)
+    themes_ttl     = _THEMES_CACHE_TTL_HOURS * 3600
+    diplomacy_ttl  = _DIPLOMACY_CACHE_TTL_HOURS * 3600
+    loaded_t = loaded_d = 0
+
+    try:
+        async for doc in db.gdelt_feature_cache.find({}):
+            kind    = doc.get("type")
+            country = doc.get("country")
+            payload = doc.get("payload")
+            fetched = doc.get("fetched_at")
+            if not (kind and country and payload and fetched):
+                continue
+            age = (now - fetched.replace(tzinfo=timezone.utc) if fetched.tzinfo is None else now - fetched).total_seconds()
+            if kind == "themes" and age < themes_ttl:
+                _gdelt_themes_cache[country]    = payload
+                _gdelt_themes_cache_ts[country] = fetched if fetched.tzinfo else fetched.replace(tzinfo=timezone.utc)
+                loaded_t += 1
+            elif kind == "diplomacy" and age < diplomacy_ttl:
+                _gdelt_diplomacy_cache[country]    = payload
+                _gdelt_diplomacy_cache_ts[country] = fetched if fetched.tzinfo else fetched.replace(tzinfo=timezone.utc)
+                loaded_d += 1
+        logger.info(f"GDELT feature cache restored from DB: {loaded_t} themes, {loaded_d} diplomacy entries")
+    except Exception as exc:
+        logger.warning(f"GDELT feature cache load failed (non-fatal): {exc}")
+
+
 async def _ensure_gdelt_indexes() -> None:
     """Create MongoDB indexes for the gdelt_ticks collection (idempotent)."""
     try:
@@ -3193,7 +3244,9 @@ async def startup_event():
         "Scheduler started — casualty data refreshes hourly, "
         "GDELT CSV pipeline refreshes every 15 minutes"
     )
-    # Seed GDELT cache from the CSV pipeline on startup (no DOC 2.0 API calls).
+    # Restore themes + diplomacy caches from MongoDB (no DOC 2.0 calls on restart).
+    await _load_gdelt_feature_caches()
+    # Seed GDELT timeline cache from the CSV pipeline on startup (no DOC 2.0 API calls).
     # Downloads the latest 15-min GDELT events file, upserts to gdelt_ticks,
     # and rebuilds _gdelt_cache from MongoDB.  Subsequent ticks run every 15 min.
     asyncio.create_task(fetch_gdelt_csv_tick())
