@@ -154,9 +154,9 @@ export default function HumanitarianThemeRadar() {
         params: { country: c },
       });
       setData(res.data);
-      // Backend is warming up the cache in background — retry until data arrives
+      // GKG CSV pipeline is still on its first tick — retry every 15s until data arrives
       if (res.data?.pending) {
-        retryRef.current = setTimeout(() => load(c), 30_000);
+        retryRef.current = setTimeout(() => load(c), 15_000);
       }
     } catch (err) {
       setError("GDELT themes unavailable — data may be loading");
@@ -218,8 +218,8 @@ export default function HumanitarianThemeRadar() {
       {!loading && data?.pending && (
         <div className="text-[9px] font-mono text-zinc-600 text-center py-8 space-y-1">
           <div className="w-4 h-4 border border-zinc-700 border-t-yellow-500 rounded-full animate-spin mx-auto mb-3" />
-          <p>Cache warming up — retrying in 30s</p>
-          <p className="text-zinc-700">GDELT theme queries run in the background on first load</p>
+          <p>GKG pipeline initialising — retrying in 15s</p>
+          <p className="text-zinc-700">Data available after first CSV tick (~30–60s)</p>
         </div>
       )}
 

@@ -2273,9 +2273,34 @@ _GCOL_N_ART   = 33  # NumArticles: article count referencing this event
 _GCOL_TONE    = 34  # AvgTone: average tone across all articles (-100 to +100)
 _GCOL_CTRY    = 53  # ActionGeo_CountryCode: FIPS 2-letter code of action location
 
+# GKG 2.1 CSV column indices (0-based, tab-separated, no header row).
+# Source: GDELT Global Knowledge Graph Codebook v2.1
+_GKG_DATE   = 1    # DATE: YYYYMMDDHHMMSS
+_GKG_THEMES = 7    # V1Themes: semicolon-separated plain theme names
+_GKG_LOCS   = 11   # V2Locations: semicolons separate records; within each record, # separates fields
+_GKG_TONE   = 17   # V1.1Tone: comma-separated, first value is overall tone
+
+# Maps each WatchTower display-theme → GDELT GKG theme strings to match.
+# If ANY keyword appears in the article's V1Themes the display theme is counted.
+_GKG_THEME_KEYWORDS: Dict[str, List[str]] = {
+    "KILL":            ["KILL"],
+    "WOUND":           ["WOUND"],
+    "REFUGEES":        ["REFUGEES", "REFUGEE"],
+    "FAMINE":          ["FAMINE"],
+    "HOSPITAL":        ["HOSPITAL"],
+    "HUMANITARIAN":    ["HUMANITARIAN"],
+    "CEASEFIRE":       ["WB_PEACE_CEASEFIRE", "CEASEFIRE"],
+    "PEACE":           ["WB_PEACE_CEASEFIRE", "PEACE"],
+    "NEGOTIATION":     ["NEGOTIATION"],
+    "DIPLOMACY":       ["ECON_DIPLOMATIC_RELATIONS", "DIPLOMACY"],
+    "MILITARY_STRIKE": ["MILITARY_STRIKE"],
+    "ATTACK":          ["ATTACK"],
+}
+
 # Tracks file timestamps (YYYYMMDDHHMMSS) already processed this session to
 # prevent double-counting on scheduler overlap or backend restart within TTL.
 _gdelt_csv_seen: set = set()
+_gdelt_gkg_seen: set = set()
 
 # In-memory cache mirroring the pattern used by _treemap_cache. Populated by
 # the 15-minute CSV scheduler job; served straight from the API endpoints.
@@ -2418,6 +2443,69 @@ def _parse_gdelt_events_csv_sync(data: bytes) -> List[Dict]:
     return rows
 
 
+def _parse_gdelt_gkg_csv_sync(data: bytes) -> List[Dict]:
+    """Parse a GDELT 2.1 GKG CSV zip (synchronous, runs in thread-pool executor).
+
+    Decompresses the zip, iterates rows, and returns only rows whose V2Locations
+    contain one of our tracked FIPS country codes AND whose V1Themes include at
+    least one of our tracked display themes.
+
+    Each returned dict:  {country, date (YYYY-MM-DD), themes: {display_theme: count}}
+    """
+    rows: List[Dict] = []
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            csv_name = next(
+                (n for n in zf.namelist() if n.upper().endswith('.CSV')),
+                zf.namelist()[0],
+            )
+            with zf.open(csv_name) as f:
+                reader = csv.reader(
+                    io.TextIOWrapper(f, encoding='utf-8', errors='replace'),
+                    delimiter='\t',
+                )
+                for row in reader:
+                    if len(row) <= max(_GKG_LOCS, _GKG_THEMES, _GKG_DATE):
+                        continue
+
+                    # -- Identify target countries from V2Locations --
+                    matched_countries: set = set()
+                    for loc_record in row[_GKG_LOCS].split(";"):
+                        parts = loc_record.split("#")
+                        if len(parts) >= 3:
+                            ctry = _FIPS_TO_COUNTRY.get(parts[2])
+                            if ctry:
+                                matched_countries.add(ctry)
+                    if not matched_countries:
+                        continue
+
+                    # -- Parse date --
+                    raw_date = row[_GKG_DATE]
+                    if len(raw_date) < 8:
+                        continue
+                    try:
+                        date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:8]}"
+                    except Exception:
+                        continue
+
+                    # -- Count matched display themes from V1Themes --
+                    themes_raw = row[_GKG_THEMES].upper()
+                    theme_counts: Dict[str, int] = {}
+                    for display_theme, keywords in _GKG_THEME_KEYWORDS.items():
+                        for kw in keywords:
+                            if kw in themes_raw:
+                                theme_counts[display_theme] = 1
+                                break  # one keyword match is enough per display theme
+                    if not theme_counts:
+                        continue
+
+                    for country in matched_countries:
+                        rows.append({"country": country, "date": date, "themes": theme_counts})
+    except Exception as exc:
+        logger.warning(f"GDELT GKG CSV parse error: {exc}")
+    return rows
+
+
 async def _upsert_gdelt_ticks(file_ts: str, rows: List[Dict]) -> None:
     """Aggregate parsed rows from one 15-min file and upsert into `gdelt_ticks`.
 
@@ -2454,6 +2542,126 @@ async def _upsert_gdelt_ticks(file_ts: str, rows: List[Dict]) -> None:
     ]
     if ops:
         await db.gdelt_ticks.bulk_write(ops, ordered=False)
+
+
+async def _upsert_gdelt_theme_ticks(file_ts: str, rows: List[Dict]) -> None:
+    """Aggregate GKG rows from one 15-min file and upsert into `gdelt_theme_ticks`.
+
+    One document per (file_ts, country) — idempotent, safe on re-run.
+    """
+    agg: Dict[tuple, Dict] = defaultdict(lambda: {"date": "", "themes": {}})
+    for r in rows:
+        key = (r["country"], r["date"])
+        agg[key]["date"] = r["date"]
+        for theme, count in r["themes"].items():
+            agg[key]["themes"][theme] = agg[key]["themes"].get(theme, 0) + count
+
+    expires_at = datetime.now(timezone.utc) + timedelta(days=32)
+    ops = [
+        UpdateOne(
+            {"file_ts": file_ts, "country": country},
+            {"$setOnInsert": {
+                "file_ts":    file_ts,
+                "country":    country,
+                "date":       vals["date"],
+                "themes":     vals["themes"],
+                "expires_at": expires_at,
+            }},
+            upsert=True,
+        )
+        for (country, _date), vals in agg.items()
+    ]
+    if ops:
+        await db.gdelt_theme_ticks.bulk_write(ops, ordered=False)
+
+
+async def _build_gdelt_theme_caches_from_db() -> None:
+    """Aggregate last 30 days of `gdelt_theme_ticks` → populate themes and diplomacy caches.
+
+    Produces the same payload shapes that the endpoints previously fetched from DOC 2.0.
+    Called at startup (after loading indexes) and at the end of every GKG CSV tick.
+    """
+    global _gdelt_themes_cache, _gdelt_themes_cache_ts
+    global _gdelt_diplomacy_cache, _gdelt_diplomacy_cache_ts
+
+    thirty_days_ago = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%d")
+
+    # Accumulate theme counts per (country, date) from all stored ticks
+    country_date_themes: Dict[str, Dict[str, Dict[str, int]]] = defaultdict(
+        lambda: defaultdict(lambda: defaultdict(int))
+    )
+    try:
+        async for doc in db.gdelt_theme_ticks.find({"date": {"$gte": thirty_days_ago}}):
+            country = doc.get("country")
+            date    = doc.get("date")
+            themes  = doc.get("themes", {})
+            if country and date:
+                for theme, count in themes.items():
+                    country_date_themes[country][date][theme] += count
+    except Exception as exc:
+        logger.warning(f"GDELT theme ticks DB query failed: {exc}")
+        return
+
+    if not country_date_themes:
+        logger.info("GDELT theme caches: no data in gdelt_theme_ticks yet (will populate on next CSV tick)")
+        return
+
+    now = datetime.now(timezone.utc)
+
+    for country, date_themes in country_date_themes.items():
+        dates = sorted(date_themes.keys())
+
+        # ── Humanitarian Themes ──────────────────────────────────────────────
+        theme_timelines: Dict[str, Dict] = {}
+        radar_values:    Dict[str, float] = {}
+        for display_theme in HUMANITARIAN_THEMES:
+            values = [float(date_themes[d].get(display_theme, 0)) for d in dates]
+            if any(v > 0 for v in values):
+                theme_timelines[display_theme] = {"dates": dates, "values": values}
+                last7 = values[-7:] if len(values) >= 7 else values
+                radar_values[display_theme] = round(sum(last7) / len(last7), 4) if last7 else 0.0
+
+        _gdelt_themes_cache[country]    = {
+            "country":      country,
+            "timelines":    theme_timelines,
+            "radar_values": radar_values,
+            "themes":       HUMANITARIAN_THEMES,
+        }
+        _gdelt_themes_cache_ts[country] = now
+
+        # ── Diplomacy vs Violence ────────────────────────────────────────────
+        dipl_by_date: Dict[str, float] = {}
+        viol_by_date: Dict[str, float] = {}
+        for d in dates:
+            d_total = sum(date_themes[d].get(t, 0) for t in DIPLOMACY_THEMES)
+            v_total = sum(date_themes[d].get(t, 0) for t in VIOLENCE_THEMES)
+            if d_total: dipl_by_date[d] = float(d_total)
+            if v_total: viol_by_date[d] = float(v_total)
+
+        all_dates = sorted(set(dipl_by_date) | set(viol_by_date))
+        dipl_vals = [round(dipl_by_date.get(d, 0.0), 4) for d in all_dates]
+        viol_vals = [round(viol_by_date.get(d, 0.0), 4) for d in all_dates]
+        last7_d   = dipl_vals[-7:] if len(dipl_vals) >= 7 else dipl_vals
+        last7_v   = viol_vals[-7:] if len(viol_vals) >= 7 else viol_vals
+        avg_d     = round(sum(last7_d) / len(last7_d), 4) if last7_d else 0.0
+        avg_v     = round(sum(last7_v) / len(last7_v), 4) if last7_v else 0.0
+        denom     = avg_d + avg_v
+        pulse     = round(avg_d / denom, 3) if denom > 0 else None
+
+        _gdelt_diplomacy_cache[country]    = {
+            "country":          country,
+            "dates":            all_dates,
+            "diplomacy":        dipl_vals,
+            "violence":         viol_vals,
+            "avg_dipl_7d":      avg_d,
+            "avg_viol_7d":      avg_v,
+            "pulse_index":      pulse,
+            "diplomacy_themes": DIPLOMACY_THEMES,
+            "violence_themes":  VIOLENCE_THEMES,
+        }
+        _gdelt_diplomacy_cache_ts[country] = now
+
+    logger.info(f"GDELT theme caches rebuilt from DB: {len(country_date_themes)} countries")
 
 
 async def _build_gdelt_cache_from_db() -> Dict[str, Dict]:
@@ -2539,18 +2747,20 @@ async def _build_gdelt_cache_from_db() -> Dict[str, Dict]:
 
 
 async def fetch_gdelt_csv_tick() -> None:
-    """Download the latest GDELT 2.0 Events CSV, parse it, and upsert into MongoDB.
+    """Download the latest GDELT Events + GKG CSVs, parse, and upsert into MongoDB.
 
-    Called every 15 minutes by the scheduler.  `lastupdate.txt` exposes the URL
-    of the most recent 15-minute events zip.  File timestamps serve as idempotency
-    keys — a re-run within the same 15-minute window is a silent no-op.
-    After a successful upsert the in-memory `_gdelt_cache` is rebuilt so API
-    endpoints reflect the new data without waiting for the next hourly refresh.
+    Called every 15 minutes by the scheduler.  `lastupdate.txt` exposes URLs for
+    three file types in the same timestamp: export (events), mentions, and gkg.
+    We download both the Events CSV (for volume/tone timeline) and the GKG CSV
+    (for humanitarian themes and diplomacy signals) — both are public bulk downloads
+    with no rate limits.
+
+    File timestamps are idempotency keys — re-runs in the same window are no-ops.
     """
-    global _gdelt_cache, _gdelt_cache_ts, _gdelt_csv_seen
+    global _gdelt_cache, _gdelt_cache_ts, _gdelt_csv_seen, _gdelt_gkg_seen
 
     async with aiohttp.ClientSession(headers={"User-Agent": "WatchTower/1.0"}) as session:
-        # ── 1. Discover the latest events CSV URL ──────────────────────────────
+        # ── 1. Fetch lastupdate.txt — discover URLs for both file types ────────
         try:
             async with session.get(
                 GDELT_LASTUPDATE_URL,
@@ -2564,72 +2774,101 @@ async def fetch_gdelt_csv_tick() -> None:
             logger.warning(f"GDELT lastupdate.txt fetch failed: {exc}")
             return
 
-        # Format: "<bytes> <md5> <url>" — one line per file type (export/mentions/gkg)
+        # Format: "<bytes> <md5> <url>" — three lines (export / mentions / gkg)
         csv_url: Optional[str] = None
+        gkg_url: Optional[str] = None
         for line in text.strip().splitlines():
             parts = line.split()
-            if len(parts) >= 3 and parts[2].endswith(".export.CSV.zip"):
-                csv_url = parts[2]
-                break
+            if len(parts) >= 3:
+                if parts[2].endswith(".export.CSV.zip"):
+                    csv_url = parts[2]
+                elif parts[2].endswith(".gkg.csv.zip"):
+                    gkg_url = parts[2]
 
         if not csv_url:
             logger.warning("GDELT lastupdate.txt: no .export.CSV.zip URL found")
             return
 
-        # 14-digit timestamp embedded in the filename (e.g. "20260803143000")
         m = re.search(r'(\d{14})\.export\.CSV\.zip', csv_url)
         file_ts = m.group(1) if m else csv_url
 
-        if file_ts in _gdelt_csv_seen:
-            logger.debug(f"GDELT CSV {file_ts} already processed — skipping")
-            return
+        # ── 2. Download Events CSV (skip if already seen) ──────────────────────
+        events_data: Optional[bytes] = None
+        if file_ts not in _gdelt_csv_seen:
+            try:
+                async with session.get(csv_url, timeout=aiohttp.ClientTimeout(total=90)) as resp:
+                    if resp.status == 200:
+                        events_data = await resp.read()
+                    else:
+                        logger.warning(f"GDELT Events CSV {file_ts} HTTP {resp.status}")
+            except Exception as exc:
+                logger.warning(f"GDELT Events CSV {file_ts} download failed: {exc}")
+        else:
+            logger.debug(f"GDELT Events CSV {file_ts} already processed — skipping")
 
-        # ── 2. Download the zip ────────────────────────────────────────────────
-        try:
-            async with session.get(
-                csv_url,
-                timeout=aiohttp.ClientTimeout(total=90),
-            ) as resp:
-                if resp.status != 200:
-                    logger.warning(f"GDELT CSV {file_ts} download HTTP {resp.status}")
-                    return
-                data = await resp.read()
-        except Exception as exc:
-            logger.warning(f"GDELT CSV {file_ts} download failed: {exc}")
-            return
+        # ── 3. Download GKG CSV (skip if already seen or URL missing) ──────────
+        gkg_data: Optional[bytes] = None
+        if gkg_url and file_ts not in _gdelt_gkg_seen:
+            try:
+                async with session.get(gkg_url, timeout=aiohttp.ClientTimeout(total=120)) as resp:
+                    if resp.status == 200:
+                        gkg_data = await resp.read()
+                    else:
+                        logger.warning(f"GDELT GKG CSV {file_ts} HTTP {resp.status}")
+            except Exception as exc:
+                logger.warning(f"GDELT GKG CSV {file_ts} download failed: {exc}")
+        elif not gkg_url:
+            logger.debug("GDELT lastupdate.txt: no .gkg.csv.zip URL found")
 
-    # ── 3. Parse in thread pool (CPU-bound, keep event loop free) ─────────────
     loop = asyncio.get_event_loop()
-    rows: List[Dict] = await loop.run_in_executor(
-        None, _parse_gdelt_events_csv_sync, data
-    )
 
-    # Mark as seen regardless — avoids hammering on parse errors
-    _gdelt_csv_seen.add(file_ts)
-    if len(_gdelt_csv_seen) > 1000:
-        _gdelt_csv_seen = set(list(_gdelt_csv_seen)[-500:])
-
-    if not rows:
-        return
-
-    # ── 4. Upsert into MongoDB ─────────────────────────────────────────────────
-    try:
-        await _upsert_gdelt_ticks(file_ts, rows)
-    except Exception as exc:
-        logger.warning(f"GDELT CSV {file_ts} DB upsert failed: {exc}")
-        return
-
-    # ── 5. Rebuild in-memory cache from 30-day window ─────────────────────────
-    results = await _build_gdelt_cache_from_db()
-    if results:
-        _gdelt_cache    = results
-        _gdelt_cache_ts = datetime.now(timezone.utc)
-        logger.info(
-            f"GDELT CSV tick {file_ts}: {len(rows)} events → "
-            f"cache rebuilt for {len(results)} countries"
+    # ── 4. Process Events CSV → gdelt_ticks → timeline cache ──────────────────
+    if events_data:
+        rows: List[Dict] = await loop.run_in_executor(
+            None, _parse_gdelt_events_csv_sync, events_data
         )
-    else:
-        logger.warning(f"GDELT CSV tick {file_ts}: DB aggregate returned no data")
+        _gdelt_csv_seen.add(file_ts)
+        if len(_gdelt_csv_seen) > 1000:
+            _gdelt_csv_seen = set(list(_gdelt_csv_seen)[-500:])
+
+        if rows:
+            try:
+                await _upsert_gdelt_ticks(file_ts, rows)
+            except Exception as exc:
+                logger.warning(f"GDELT Events {file_ts} DB upsert failed: {exc}")
+
+            results = await _build_gdelt_cache_from_db()
+            if results:
+                _gdelt_cache    = results
+                _gdelt_cache_ts = datetime.now(timezone.utc)
+                logger.info(
+                    f"GDELT Events tick {file_ts}: {len(rows)} rows → "
+                    f"timeline cache rebuilt for {len(results)} countries"
+                )
+            else:
+                logger.warning(f"GDELT Events tick {file_ts}: DB aggregate returned no data")
+
+    # ── 5. Process GKG CSV → gdelt_theme_ticks → themes/diplomacy caches ──────
+    if gkg_data:
+        gkg_rows: List[Dict] = await loop.run_in_executor(
+            None, _parse_gdelt_gkg_csv_sync, gkg_data
+        )
+        _gdelt_gkg_seen.add(file_ts)
+        if len(_gdelt_gkg_seen) > 1000:
+            _gdelt_gkg_seen = set(list(_gdelt_gkg_seen)[-500:])
+
+        if gkg_rows:
+            try:
+                await _upsert_gdelt_theme_ticks(file_ts, gkg_rows)
+            except Exception as exc:
+                logger.warning(f"GDELT GKG {file_ts} DB upsert failed: {exc}")
+
+            await _build_gdelt_theme_caches_from_db()
+            logger.info(
+                f"GDELT GKG tick {file_ts}: {len(gkg_rows)} theme-rows upserted"
+            )
+        else:
+            logger.debug(f"GDELT GKG tick {file_ts}: no rows matched our countries/themes")
 
 
 async def fetch_gdelt_data() -> Dict[str, Dict]:
@@ -2911,16 +3150,13 @@ async def get_gdelt_alerts():
 
 
 # ── #2 Humanitarian Theme Radar ───────────────────────────────────────────────
+#
+# Cache populated every 15 minutes by the GKG CSV pipeline (fetch_gdelt_csv_tick).
+# No DOC 2.0 API calls — all data comes from the bulk GKG CSV downloads.
 
-# Short per-country theme cache.  Populated on demand (not in the hourly
-# scheduler) because theme queries are slow and per-country.
-_gdelt_themes_cache: Dict[str, Dict] = {}   # country -> {themes: {name: [values]}, ...}
+_gdelt_themes_cache:    Dict[str, Dict]     = {}
 _gdelt_themes_cache_ts: Dict[str, datetime] = {}
-_gdelt_themes_fetching: set = set()   # countries with an in-flight background refresh
-_THEMES_CACHE_TTL_HOURS = 24   # bumped from 6h — themes change slowly and DOC 2.0 is rate-limited
 
-# Humanitarian theme tags to track in GDELT GKG (DOC 2.0 timelinetheme mode).
-# These are GDELT GKG 2.0 theme codes used in the `mode=timelinetheme` queries.
 HUMANITARIAN_THEMES = [
     "KILL",
     "WOUND",
@@ -2933,228 +3169,57 @@ HUMANITARIAN_THEMES = [
 ]
 
 
-async def fetch_gdelt_themes_for_country(country: str) -> Dict:
-    """Fetch GDELT DOC 2.0 theme timelines for a single conflict country.
-
-    Returns {theme_name: {dates: [...], values: [...]}} for the last 30 days.
-    Cached per-country for 6 hours.
-    """
-    query = GDELT_QUERY_MAP.get(country)
-    if not query:
-        raise HTTPException(status_code=404, detail=f"No GDELT query mapping for country={country!r}")
-
-    theme_timelines: Dict[str, Dict] = {}
-    async with aiohttp.ClientSession(headers={"User-Agent": "WatchTower/1.0"}) as session:
-        for theme in HUMANITARIAN_THEMES:
-            theme_query = f"{query} theme:{theme}"
-            data = await _gdelt_fetch_mode(session, theme_query, "timelinevolraw", timespan="30d")
-            if data and "timeline" in data and data["timeline"]:
-                series = data["timeline"][0].get("data", [])
-                dates, values = [], []
-                for pt in series:
-                    raw = pt.get("date", "")
-                    try:
-                        day = f"{raw[0:4]}-{raw[4:6]}-{raw[6:8]}"
-                        dates.append(day)
-                        values.append(round(float(pt.get("value") or 0), 4))
-                    except Exception:
-                        continue
-                if any(v > 0 for v in values):
-                    theme_timelines[theme] = {"dates": dates, "values": values}
-
-    # Derive a single "latest 7-day average" per theme for the radar chart
-    radar_values: Dict[str, float] = {}
-    for theme, tl in theme_timelines.items():
-        vals = tl["values"]
-        last7 = vals[-7:] if len(vals) >= 7 else vals
-        radar_values[theme] = round(sum(last7) / len(last7), 4) if last7 else 0.0
-
-    return {
-        "country":       country,
-        "timelines":     theme_timelines,
-        "radar_values":  radar_values,
-        "themes":        HUMANITARIAN_THEMES,
-    }
-
-
 @api_router.get("/gdelt-themes")
 async def get_gdelt_themes(country: str = "Ukraine"):
-    """Return GDELT humanitarian-theme timelines for a single conflict country.
+    """Return GDELT humanitarian-theme timelines derived from GKG CSV bulk data.
 
-    Supported themes: KILL, WOUND, REFUGEES, FAMINE, HOSPITAL, HUMANITARIAN,
-    CEASEFIRE, PEACE.  Served from a per-country 24-hour cache.
-
-    Never blocks on a live DOC 2.0 fetch — if the cache is cold or stale the
-    live fetch is dispatched as a background task and the endpoint returns the
-    stale payload immediately (or 202 if no data has ever been fetched).
+    Populated every 15 minutes by the CSV pipeline — no rate-limited API calls.
+    Returns `pending: true` if the GKG pipeline hasn't processed its first file yet.
     """
     now = datetime.now(timezone.utc)
-    cache_ts = _gdelt_themes_cache_ts.get(country)
-    cache_stale = (
-        cache_ts is None
-        or (now - cache_ts).total_seconds() > _THEMES_CACHE_TTL_HOURS * 3600
-    )
-
-    async def _refresh():
-        _gdelt_themes_fetching.add(country)
-        try:
-            result = await fetch_gdelt_themes_for_country(country)
-            fetched_at = datetime.now(timezone.utc)
-            _gdelt_themes_cache[country] = result
-            _gdelt_themes_cache_ts[country] = fetched_at
-            # Persist to MongoDB so restarts reuse this data
-            await db.gdelt_feature_cache.update_one(
-                {"type": "themes", "country": country},
-                {"$set": {"payload": result, "fetched_at": fetched_at}},
-                upsert=True,
-            )
-        except Exception as exc:
-            logger.warning(f"GDELT themes background refresh failed for {country}: {exc}")
-        finally:
-            _gdelt_themes_fetching.discard(country)
-
-    if cache_stale or country not in _gdelt_themes_cache:
-        if country not in _gdelt_themes_cache:
-            # No data yet — fire ONE background fetch (guard prevents duplicates)
-            if country not in _gdelt_themes_fetching:
-                asyncio.create_task(_refresh())
-            return {"fetched_at": None, "source": "GDELT DOC 2.0", "pending": True,
-                    "country": country, "timelines": {}, "radar_values": {}, "themes": HUMANITARIAN_THEMES}
-        # Stale but present — return immediately, refresh once in background
-        if country not in _gdelt_themes_fetching:
-            asyncio.create_task(_refresh())
-
+    if country not in _gdelt_themes_cache:
+        return {
+            "fetched_at": None, "source": "GDELT GKG CSV", "pending": True,
+            "country": country, "timelines": {}, "radar_values": {}, "themes": HUMANITARIAN_THEMES,
+        }
     payload = _gdelt_themes_cache[country]
     return {
         "fetched_at": _gdelt_themes_cache_ts.get(country, now).isoformat(),
-        "source":     "GDELT DOC 2.0",
+        "source":     "GDELT GKG CSV",
         **payload,
     }
 
 
 # ── #5 Diplomatic-Pulse Panel ─────────────────────────────────────────────────
+#
+# Cache populated every 15 minutes by the GKG CSV pipeline (fetch_gdelt_csv_tick).
+# No DOC 2.0 API calls.
 
-_gdelt_diplomacy_cache: Dict[str, Dict] = {}   # country -> payload
+_gdelt_diplomacy_cache:    Dict[str, Dict]     = {}
 _gdelt_diplomacy_cache_ts: Dict[str, datetime] = {}
-_gdelt_diplomacy_fetching: set = set()   # countries with an in-flight background refresh
-_DIPLOMACY_CACHE_TTL_HOURS = 24   # bumped from 6h — same reasoning as themes TTL
 
-# Theme proxies for diplomacy vs violence in GDELT DOC 2.0 GKG
-DIPLOMACY_THEMES  = ["PEACE", "CEASEFIRE", "NEGOTIATION", "DIPLOMACY"]
-VIOLENCE_THEMES   = ["KILL", "WOUND", "MILITARY_STRIKE", "ATTACK"]
-
-
-async def fetch_gdelt_diplomacy_for_country(country: str) -> Dict:
-    """Fetch diplomacy-vs-violence theme timelines for a single conflict country.
-
-    Returns 30-day daily series for both theme clusters plus derived pulse index:
-      pulse_index = diplomacy_avg_7d / (diplomacy_avg_7d + violence_avg_7d)
-    0 = pure violence, 1 = pure diplomacy; 0.5 = balanced.
-    """
-    query = GDELT_QUERY_MAP.get(country)
-    if not query:
-        raise HTTPException(status_code=404, detail=f"No GDELT query mapping for country={country!r}")
-
-    async def _fetch_theme_group(themes: List[str]) -> Dict:
-        """Fetch and sum multiple theme timelines into a single daily series."""
-        combined: Dict[str, float] = {}
-        async with aiohttp.ClientSession(headers={"User-Agent": "WatchTower/1.0"}) as s:
-            for theme in themes:
-                theme_query = f"{query} theme:{theme}"
-                data = await _gdelt_fetch_mode(s, theme_query, "timelinevolraw", timespan="30d")
-                if data and "timeline" in data and data["timeline"]:
-                    for pt in data["timeline"][0].get("data", []):
-                        raw = pt.get("date", "")
-                        try:
-                            day = f"{raw[0:4]}-{raw[4:6]}-{raw[6:8]}"
-                            combined[day] = combined.get(day, 0.0) + float(pt.get("value") or 0)
-                        except Exception:
-                            continue
-        return combined
-
-    dipl_series, viol_series = await asyncio.gather(
-        _fetch_theme_group(DIPLOMACY_THEMES),
-        _fetch_theme_group(VIOLENCE_THEMES),
-    )
-
-    all_dates = sorted(set(dipl_series) | set(viol_series))
-    dipl_vals = [round(dipl_series.get(d, 0.0), 4) for d in all_dates]
-    viol_vals = [round(viol_series.get(d, 0.0), 4) for d in all_dates]
-
-    # 7-day averages
-    last7_dipl = dipl_vals[-7:] if len(dipl_vals) >= 7 else dipl_vals
-    last7_viol = viol_vals[-7:] if len(viol_vals) >= 7 else viol_vals
-    avg_dipl_7d = round(sum(last7_dipl) / len(last7_dipl), 4) if last7_dipl else 0.0
-    avg_viol_7d = round(sum(last7_viol) / len(last7_viol), 4) if last7_viol else 0.0
-
-    denom = avg_dipl_7d + avg_viol_7d
-    pulse_index = round(avg_dipl_7d / denom, 3) if denom > 0 else None
-
-    return {
-        "country":      country,
-        "dates":        all_dates,
-        "diplomacy":    dipl_vals,
-        "violence":     viol_vals,
-        "avg_dipl_7d":  avg_dipl_7d,
-        "avg_viol_7d":  avg_viol_7d,
-        "pulse_index":  pulse_index,   # 0 = violence, 1 = diplomacy
-        "diplomacy_themes": DIPLOMACY_THEMES,
-        "violence_themes":  VIOLENCE_THEMES,
-    }
+DIPLOMACY_THEMES = ["PEACE", "CEASEFIRE", "NEGOTIATION", "DIPLOMACY"]
+VIOLENCE_THEMES  = ["KILL", "WOUND", "MILITARY_STRIKE", "ATTACK"]
 
 
 @api_router.get("/gdelt-diplomacy")
 async def get_gdelt_diplomacy(country: str = "Ukraine"):
-    """Return GDELT diplomacy-vs-violence theme pulse for a conflict country.
+    """Return GDELT diplomacy-vs-violence pulse derived from GKG CSV bulk data.
 
-    Derived from GDELT GKG 2.0 theme timelines (30 days).
     `pulse_index` runs 0 (pure violence coverage) → 1 (pure diplomacy coverage).
-    Served from a per-country 24-hour cache.
-
-    Same non-blocking pattern as /gdelt-themes: stale data is returned
-    immediately while a background task refreshes the cache.
+    Populated every 15 minutes by the CSV pipeline — no rate-limited API calls.
     """
     now = datetime.now(timezone.utc)
-    cache_ts = _gdelt_diplomacy_cache_ts.get(country)
-    cache_stale = (
-        cache_ts is None
-        or (now - cache_ts).total_seconds() > _DIPLOMACY_CACHE_TTL_HOURS * 3600
-    )
-
-    async def _refresh():
-        _gdelt_diplomacy_fetching.add(country)
-        try:
-            result = await fetch_gdelt_diplomacy_for_country(country)
-            fetched_at = datetime.now(timezone.utc)
-            _gdelt_diplomacy_cache[country] = result
-            _gdelt_diplomacy_cache_ts[country] = fetched_at
-            # Persist to MongoDB so restarts reuse this data
-            await db.gdelt_feature_cache.update_one(
-                {"type": "diplomacy", "country": country},
-                {"$set": {"payload": result, "fetched_at": fetched_at}},
-                upsert=True,
-            )
-        except Exception as exc:
-            logger.warning(f"GDELT diplomacy background refresh failed for {country}: {exc}")
-        finally:
-            _gdelt_diplomacy_fetching.discard(country)
-
-    if cache_stale or country not in _gdelt_diplomacy_cache:
-        if country not in _gdelt_diplomacy_cache:
-            # No data yet — fire ONE background fetch (guard prevents duplicates)
-            if country not in _gdelt_diplomacy_fetching:
-                asyncio.create_task(_refresh())
-            return {"fetched_at": None, "source": "GDELT DOC 2.0", "pending": True,
-                    "country": country, "timelines": {}, "pulse_index": None,
-                    "diplomacy_score": None, "violence_score": None}
-        # Stale but present — return immediately, refresh once in background
-        if country not in _gdelt_diplomacy_fetching:
-            asyncio.create_task(_refresh())
-
+    if country not in _gdelt_diplomacy_cache:
+        return {
+            "fetched_at": None, "source": "GDELT GKG CSV", "pending": True,
+            "country": country, "dates": [], "diplomacy": [], "violence": [],
+            "pulse_index": None, "diplomacy_score": None, "violence_score": None,
+        }
     payload = _gdelt_diplomacy_cache[country]
     return {
         "fetched_at": _gdelt_diplomacy_cache_ts.get(country, now).isoformat(),
-        "source":     "GDELT DOC 2.0",
+        "source":     "GDELT GKG CSV",
         **payload,
     }
 
@@ -3175,57 +3240,16 @@ scheduler = AsyncIOScheduler()
 
 
 
-async def _load_gdelt_feature_caches() -> None:
-    """Restore themes + diplomacy caches from MongoDB on startup.
-
-    Documents in `gdelt_feature_cache` are written by the background _refresh()
-    tasks and survive server restarts, avoiding DOC 2.0 re-fetches.
-    Only loads documents whose fetched_at is less than the TTL age.
-    """
-    global _gdelt_themes_cache, _gdelt_themes_cache_ts
-    global _gdelt_diplomacy_cache, _gdelt_diplomacy_cache_ts
-
-    now = datetime.now(timezone.utc)
-    themes_ttl     = _THEMES_CACHE_TTL_HOURS * 3600
-    diplomacy_ttl  = _DIPLOMACY_CACHE_TTL_HOURS * 3600
-    loaded_t = loaded_d = 0
-
-    try:
-        async for doc in db.gdelt_feature_cache.find({}):
-            kind    = doc.get("type")
-            country = doc.get("country")
-            payload = doc.get("payload")
-            fetched = doc.get("fetched_at")
-            if not (kind and country and payload and fetched):
-                continue
-            age = (now - fetched.replace(tzinfo=timezone.utc) if fetched.tzinfo is None else now - fetched).total_seconds()
-            if kind == "themes" and age < themes_ttl:
-                _gdelt_themes_cache[country]    = payload
-                _gdelt_themes_cache_ts[country] = fetched if fetched.tzinfo else fetched.replace(tzinfo=timezone.utc)
-                loaded_t += 1
-            elif kind == "diplomacy" and age < diplomacy_ttl:
-                _gdelt_diplomacy_cache[country]    = payload
-                _gdelt_diplomacy_cache_ts[country] = fetched if fetched.tzinfo else fetched.replace(tzinfo=timezone.utc)
-                loaded_d += 1
-        logger.info(f"GDELT feature cache restored from DB: {loaded_t} themes, {loaded_d} diplomacy entries")
-    except Exception as exc:
-        logger.warning(f"GDELT feature cache load failed (non-fatal): {exc}")
-
-
 async def _ensure_gdelt_indexes() -> None:
-    """Create MongoDB indexes for the gdelt_ticks collection (idempotent)."""
+    """Create MongoDB indexes for gdelt_ticks and gdelt_theme_ticks (idempotent)."""
     try:
-        # TTL index: MongoDB auto-expires documents after expires_at
-        await db.gdelt_ticks.create_index("expires_at", expireAfterSeconds=0)
-        # Compound unique index for idempotent upserts
-        await db.gdelt_ticks.create_index(
-            [("file_ts", 1), ("country", 1)], unique=True
-        )
-        # Query index for the 30-day aggregate pipeline
-        await db.gdelt_ticks.create_index([("date", 1), ("country", 1)])
-        logger.info("gdelt_ticks indexes ensured")
+        for col in (db.gdelt_ticks, db.gdelt_theme_ticks):
+            await col.create_index("expires_at", expireAfterSeconds=0)
+            await col.create_index([("file_ts", 1), ("country", 1)], unique=True)
+            await col.create_index([("date", 1), ("country", 1)])
+        logger.info("gdelt_ticks + gdelt_theme_ticks indexes ensured")
     except Exception as exc:
-        logger.warning(f"gdelt_ticks index creation failed (non-fatal): {exc}")
+        logger.warning(f"GDELT index creation failed (non-fatal): {exc}")
 
 
 @app.on_event("startup")
@@ -3235,20 +3259,16 @@ async def startup_event():
     await refresh_all_data()
     # Hourly refresh for casualty data, news, and treemap
     scheduler.add_job(refresh_all_data, 'interval', hours=1)
-    # 15-minute GDELT CSV tick — downloads latest events file, upserts to DB,
-    # rebuilds _gdelt_cache.  Runs independently of the hourly job so media
-    # attention signals stay current between casualty refreshes.
+    # 15-minute GDELT CSV tick — downloads Events + GKG files, upserts to DB,
+    # rebuilds timeline, themes, and diplomacy caches with no API rate limits.
     scheduler.add_job(fetch_gdelt_csv_tick, 'interval', minutes=15, id='gdelt_csv_tick')
     scheduler.start()
     logger.info(
         "Scheduler started — casualty data refreshes hourly, "
-        "GDELT CSV pipeline refreshes every 15 minutes"
+        "GDELT CSV+GKG pipeline refreshes every 15 minutes"
     )
-    # Restore themes + diplomacy caches from MongoDB (no DOC 2.0 calls on restart).
-    await _load_gdelt_feature_caches()
-    # Seed GDELT timeline cache from the CSV pipeline on startup (no DOC 2.0 API calls).
-    # Downloads the latest 15-min GDELT events file, upserts to gdelt_ticks,
-    # and rebuilds _gdelt_cache from MongoDB.  Subsequent ticks run every 15 min.
+    # Warm up caches from any existing MongoDB data, then download the latest files.
+    await _build_gdelt_theme_caches_from_db()
     asyncio.create_task(fetch_gdelt_csv_tick())
 
 
