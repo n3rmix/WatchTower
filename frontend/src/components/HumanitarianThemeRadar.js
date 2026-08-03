@@ -142,16 +142,22 @@ export default function HumanitarianThemeRadar() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const retryRef = useRef(null);
 
   const load = useCallback(async (c) => {
     setLoading(true);
     setError(null);
     setData(null);
+    if (retryRef.current) { clearTimeout(retryRef.current); retryRef.current = null; }
     try {
       const res = await axios.get(`${BACKEND_URL}/api/gdelt-themes`, {
         params: { country: c },
       });
       setData(res.data);
+      // Backend is warming up the cache in background — retry until data arrives
+      if (res.data?.pending) {
+        retryRef.current = setTimeout(() => load(c), 30_000);
+      }
     } catch (err) {
       setError("GDELT themes unavailable — data may be loading");
     } finally {
@@ -159,7 +165,10 @@ export default function HumanitarianThemeRadar() {
     }
   }, []);
 
-  useEffect(() => { load(country); }, [country, load]);
+  useEffect(() => {
+    load(country);
+    return () => { if (retryRef.current) clearTimeout(retryRef.current); };
+  }, [country, load]);
 
   // Normalise radar values: max value across themes = 1.0
   const themes = data?.themes || Object.keys(THEME_META);
@@ -206,11 +215,19 @@ export default function HumanitarianThemeRadar() {
         </div>
       )}
 
+      {!loading && data?.pending && (
+        <div className="text-[9px] font-mono text-zinc-600 text-center py-8 space-y-1">
+          <div className="w-4 h-4 border border-zinc-700 border-t-yellow-500 rounded-full animate-spin mx-auto mb-3" />
+          <p>Cache warming up — retrying in 30s</p>
+          <p className="text-zinc-700">GDELT theme queries run in the background on first load</p>
+        </div>
+      )}
+
       {error && !loading && (
         <p className="text-[9px] font-mono text-zinc-600 text-center py-8">{error}</p>
       )}
 
-      {!loading && !error && data && (
+      {!loading && !error && data && !data.pending && (
         <div className="flex flex-col items-center gap-4">
           {/* Source pill */}
           <span className="text-[8px] font-mono text-zinc-700 uppercase tracking-wider self-end">

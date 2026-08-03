@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useRef } from "react";
 import axios from "axios";
 import {
   ResponsiveContainer,
@@ -159,16 +159,21 @@ export default function DiplomaticPulsePanel() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const retryRef = useRef(null);
 
   const load = useCallback(async (c) => {
     setLoading(true);
     setError(null);
     setData(null);
+    if (retryRef.current) { clearTimeout(retryRef.current); retryRef.current = null; }
     try {
       const res = await axios.get(`${BACKEND_URL}/api/gdelt-diplomacy`, {
         params: { country: c },
       });
       setData(res.data);
+      if (res.data?.pending) {
+        retryRef.current = setTimeout(() => load(c), 30_000);
+      }
     } catch {
       setError("GDELT diplomacy data unavailable");
     } finally {
@@ -176,7 +181,10 @@ export default function DiplomaticPulsePanel() {
     }
   }, []);
 
-  useEffect(() => { load(country); }, [country, load]);
+  useEffect(() => {
+    load(country);
+    return () => { if (retryRef.current) clearTimeout(retryRef.current); };
+  }, [country, load]);
 
   // Build chart data
   const chartData = data
@@ -224,11 +232,19 @@ export default function DiplomaticPulsePanel() {
         </div>
       )}
 
+      {!loading && data?.pending && (
+        <div className="text-[9px] font-mono text-zinc-600 text-center py-8 space-y-1">
+          <div className="w-4 h-4 border border-zinc-700 border-t-yellow-500 rounded-full animate-spin mx-auto mb-3" />
+          <p>Cache warming up — retrying in 30s</p>
+          <p className="text-zinc-700">GDELT theme queries run in the background on first load</p>
+        </div>
+      )}
+
       {error && !loading && (
         <p className="text-[9px] font-mono text-zinc-600 text-center py-8">{error}</p>
       )}
 
-      {!loading && !error && data && (
+      {!loading && !error && data && !data.pending && (
         <div className="space-y-5">
           {/* Source + timestamp */}
           <div className="flex items-center justify-between">
