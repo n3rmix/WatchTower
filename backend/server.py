@@ -2446,22 +2446,30 @@ def _parse_gdelt_events_csv_sync(data: bytes) -> List[Dict]:
 def _parse_gdelt_gkg_csv_sync(data: bytes) -> List[Dict]:
     """Parse a GDELT 2.1 GKG CSV zip (synchronous, runs in thread-pool executor).
 
-    Decompresses the zip, iterates rows, and returns only rows whose V2Locations
-    contain one of our tracked FIPS country codes AND whose V1Themes include at
-    least one of our tracked display themes.
+    Scans a range of columns for both themes and locations to be robust to minor
+    GKG format version changes — rather than relying on a single fixed index.
+
+    Theme columns scanned: 6-10 (covers V1Themes, V2Themes, V2.1EnhancedThemes)
+    Location columns scanned: 9-13 (covers V1Locations, V2Locations, V2.1EnhancedLocations)
 
     Each returned dict:  {country, date (YYYY-MM-DD), themes: {display_theme: count}}
     """
     rows: List[Dict] = []
     total_rows = 0
-    country_hits: Dict[str, int] = {}   # FIPS codes seen, for diagnostics
+    country_hits: Dict[str, int] = {}   # FIPS codes seen in location fields, for diagnostics
+
+    # Column ranges to scan (0-indexed, inclusive)
+    THEME_COLS  = range(6, 11)   # columns 6-10 cover all theme-like fields
+    LOC_COLS    = range(9, 14)   # columns 9-13 cover all location-like fields
+    MIN_COLS    = 14             # rows shorter than this are skipped
+
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
             csv_name = next(
                 (n for n in zf.namelist() if n.upper().endswith('.CSV')),
                 zf.namelist()[0],
             )
-            logger.info(f"GDELT GKG parser: opened {csv_name} from zip")
+            logger.info(f"GDELT GKG parser: opened {csv_name} from zip ({len(data)//1024} KB compressed)")
             with zf.open(csv_name) as f:
                 reader = csv.reader(
                     io.TextIOWrapper(f, encoding='utf-8', errors='replace'),
@@ -2469,26 +2477,11 @@ def _parse_gdelt_gkg_csv_sync(data: bytes) -> List[Dict]:
                 )
                 for row in reader:
                     total_rows += 1
-                    if len(row) <= max(_GKG_LOCS, _GKG_THEMES, _GKG_DATE):
+                    if len(row) < MIN_COLS:
                         continue
 
-                    # -- Identify target countries from V2Locations --
-                    matched_countries: set = set()
-                    for loc_record in row[_GKG_LOCS].split(";"):
-                        parts = loc_record.split("#")
-                        if len(parts) >= 3:
-                            fips = parts[2]
-                            ctry = _FIPS_TO_COUNTRY.get(fips)
-                            if ctry:
-                                matched_countries.add(ctry)
-                            # Diagnostic: count all 2-char FIPS codes we see
-                            if len(fips) == 2:
-                                country_hits[fips] = country_hits.get(fips, 0) + 1
-                    if not matched_countries:
-                        continue
-
-                    # -- Parse date --
-                    raw_date = row[_GKG_DATE]
+                    # -- Date from column 1 --
+                    raw_date = row[1]
                     if len(raw_date) < 8:
                         continue
                     try:
@@ -2496,14 +2489,33 @@ def _parse_gdelt_gkg_csv_sync(data: bytes) -> List[Dict]:
                     except Exception:
                         continue
 
-                    # -- Count matched display themes from V1Themes --
-                    themes_raw = row[_GKG_THEMES].upper()
+                    # -- Identify target countries by scanning all location columns --
+                    matched_countries: set = set()
+                    for col_idx in LOC_COLS:
+                        if col_idx >= len(row):
+                            break
+                        for loc_record in row[col_idx].split(";"):
+                            parts = loc_record.split("#")
+                            if len(parts) >= 3:
+                                fips = parts[2].strip()
+                                ctry = _FIPS_TO_COUNTRY.get(fips)
+                                if ctry:
+                                    matched_countries.add(ctry)
+                                if len(fips) == 2 and fips.isalpha():
+                                    country_hits[fips] = country_hits.get(fips, 0) + 1
+                    if not matched_countries:
+                        continue
+
+                    # -- Match themes by scanning all theme columns --
+                    themes_combined = " ".join(
+                        row[c] for c in THEME_COLS if c < len(row)
+                    ).upper()
                     theme_counts: Dict[str, int] = {}
                     for display_theme, keywords in _GKG_THEME_KEYWORDS.items():
                         for kw in keywords:
-                            if kw in themes_raw:
+                            if kw in themes_combined:
                                 theme_counts[display_theme] = 1
-                                break  # one keyword match is enough per display theme
+                                break
                     if not theme_counts:
                         continue
 
@@ -2512,11 +2524,10 @@ def _parse_gdelt_gkg_csv_sync(data: bytes) -> List[Dict]:
     except Exception as exc:
         logger.warning(f"GDELT GKG CSV parse error: {exc}")
 
-    # Log diagnostics so we can diagnose FIPS mismatches
-    top_fips = sorted(country_hits.items(), key=lambda x: -x[1])[:10]
+    top_fips = sorted(country_hits.items(), key=lambda x: -x[1])[:15]
     logger.info(
-        f"GDELT GKG parser: {total_rows} total rows, {len(rows)} matched. "
-        f"Top FIPS codes seen: {top_fips}"
+        f"GDELT GKG parser: {total_rows} total rows → {len(rows)} matched our countries+themes. "
+        f"Top FIPS codes in file: {top_fips}"
     )
     return rows
 
@@ -3187,6 +3198,27 @@ HUMANITARIAN_THEMES = [
     "CEASEFIRE",
     "PEACE",
 ]
+
+
+@api_router.get("/gdelt-debug")
+async def get_gdelt_debug():
+    """Diagnostic endpoint — returns the state of all GDELT in-memory caches.
+
+    Hit /api/gdelt-debug in a browser to see exactly what the pipeline has
+    collected without needing server log access.
+    """
+    theme_tick_count  = await db.gdelt_theme_ticks.count_documents({})
+    events_tick_count = await db.gdelt_ticks.count_documents({})
+    return {
+        "gdelt_cache_countries":      list(_gdelt_cache.keys()),
+        "gdelt_cache_ts":             _gdelt_cache_ts.isoformat() if _gdelt_cache_ts else None,
+        "themes_cache_countries":     list(_gdelt_themes_cache.keys()),
+        "diplomacy_cache_countries":  list(_gdelt_diplomacy_cache.keys()),
+        "gdelt_ticks_in_db":          events_tick_count,
+        "gdelt_theme_ticks_in_db":    theme_tick_count,
+        "gkg_seen_count":             len(_gdelt_gkg_seen),
+        "csv_seen_count":             len(_gdelt_csv_seen),
+    }
 
 
 @api_router.get("/gdelt-themes")
