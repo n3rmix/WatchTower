@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException
+from fastapi import FastAPI, APIRouter, HTTPException, Response
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -3222,12 +3222,14 @@ async def get_gdelt_debug():
 
 
 @api_router.get("/gdelt-themes")
-async def get_gdelt_themes(country: str = "Ukraine"):
+async def get_gdelt_themes(country: str = "Ukraine", response: Response = None):
     """Return GDELT humanitarian-theme timelines derived from GKG CSV bulk data.
 
     Populated every 15 minutes by the CSV pipeline — no rate-limited API calls.
     Returns `pending: true` if the GKG pipeline hasn't processed its first file yet.
     """
+    if response:
+        response.headers["Cache-Control"] = "no-store"
     now = datetime.now(timezone.utc)
     if country not in _gdelt_themes_cache:
         return {
@@ -3255,12 +3257,14 @@ VIOLENCE_THEMES  = ["KILL", "WOUND", "MILITARY_STRIKE", "ATTACK"]
 
 
 @api_router.get("/gdelt-diplomacy")
-async def get_gdelt_diplomacy(country: str = "Ukraine"):
+async def get_gdelt_diplomacy(country: str = "Ukraine", response: Response = None):
     """Return GDELT diplomacy-vs-violence pulse derived from GKG CSV bulk data.
 
     `pulse_index` runs 0 (pure violence coverage) → 1 (pure diplomacy coverage).
     Populated every 15 minutes by the CSV pipeline — no rate-limited API calls.
     """
+    if response:
+        response.headers["Cache-Control"] = "no-store"
     now = datetime.now(timezone.utc)
     if country not in _gdelt_diplomacy_cache:
         return {
