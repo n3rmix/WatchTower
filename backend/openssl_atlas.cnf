@@ -1,0 +1,14 @@
+openssl_conf = openssl_init
+
+[openssl_init]
+ssl_conf = ssl_sect
+
+[ssl_sect]
+system_default = system_default_sect
+
+# Python 3.14 / OpenSSL 3.4+ enables the post-quantum X25519MLKEM768 key-share
+# by default. MongoDB Atlas rejects it with TLSV1_ALERT_INTERNAL_ERROR.
+# Restrict the offered groups to the classical set that Atlas understands.
+[system_default_sect]
+Groups = x25519:secp256r1:secp384r1
+CipherString = DEFAULT@SECLEVEL=1

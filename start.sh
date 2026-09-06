@@ -30,6 +30,11 @@ else
   (
     cd "$SCRIPT_DIR/backend"
     source venv/bin/activate
+    # Python 3.14 / OpenSSL 3.4+ ships X25519MLKEM768 (post-quantum) in the
+    # TLS 1.3 ClientHello, which Atlas rejects with INTERNAL_ERROR.
+    # This config restricts groups to the classical set. MUST be set before
+    # Python starts (OpenSSL reads config at library init).
+    export OPENSSL_CONF="$SCRIPT_DIR/backend/openssl_atlas.cnf"
     nohup python -m uvicorn server:app \
       --host 127.0.0.1 --port 8001 \
       >> "$LOGS_DIR/backend.log" 2>&1 &
