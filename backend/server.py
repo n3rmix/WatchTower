@@ -36,9 +36,8 @@ def _patched_ssl_ctx(*args, **kwargs):
     ctx = _orig_ssl_ctx(*args, **kwargs)
     ctx.set_ciphers("DEFAULT@SECLEVEL=1")
     return ctx
-ssl.create_default_context = _patched_ssl_ctx
+ssl.create_default_context = _patched_ssl_ctx  # kept for process lifetime; Motor connects lazily
 client = AsyncIOMotorClient(mongo_url)
-ssl.create_default_context = _orig_ssl_ctx  # restore for other libs
 db = client[os.environ['DB_NAME']]
 
 # Create the main app
