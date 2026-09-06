@@ -19,7 +19,6 @@ import asyncio
 import zipfile
 import io
 import csv
-import ssl
 from collections import defaultdict
 from pymongo import UpdateOne
 
@@ -27,17 +26,8 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
 # MongoDB connection
-# Python 3.14 / OpenSSL 3.x defaults to SECLEVEL=2 which causes
-# TLSV1_ALERT_INTERNAL_ERROR against Atlas. Patch the default context
-# creator so PyMongo's internal TLS setup picks up SECLEVEL=1.
 mongo_url = os.environ['MONGO_URL']
-_orig_ssl_ctx = ssl.create_default_context
-def _patched_ssl_ctx(*args, **kwargs):
-    ctx = _orig_ssl_ctx(*args, **kwargs)
-    ctx.set_ciphers("DEFAULT@SECLEVEL=1")
-    return ctx
-ssl.create_default_context = _patched_ssl_ctx  # kept for process lifetime; Motor connects lazily
-client = AsyncIOMotorClient(mongo_url)
+client = AsyncIOMotorClient(mongo_url, tlsInsecure=True)
 db = client[os.environ['DB_NAME']]
 
 # Create the main app
