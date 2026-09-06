@@ -19,6 +19,7 @@ import asyncio
 import zipfile
 import io
 import csv
+import ssl
 from collections import defaultdict
 from pymongo import UpdateOne
 
@@ -26,8 +27,12 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
 # MongoDB connection
+# Python 3.14 / OpenSSL 3.x raises TLSV1_ALERT_INTERNAL_ERROR with Atlas at
+# the default SECLEVEL=2. Drop to SECLEVEL=1 to allow the full cipher suite.
 mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
+_ssl_ctx = ssl.create_default_context()
+_ssl_ctx.set_ciphers("DEFAULT@SECLEVEL=1")
+client = AsyncIOMotorClient(mongo_url, ssl_context=_ssl_ctx)
 db = client[os.environ['DB_NAME']]
 
 # Create the main app
