@@ -37,8 +37,11 @@ else
     export OPENSSL_CONF="$SCRIPT_DIR/backend/openssl_atlas.cnf"
     nohup python -m uvicorn server:app \
       --host 127.0.0.1 --port 8001 \
+      < /dev/null \
       >> "$LOGS_DIR/backend.log" 2>&1 &
-    echo $! > "$PIDS_DIR/backend.pid"
+    _pid=$!
+    disown $_pid
+    echo $_pid > "$PIDS_DIR/backend.pid"
   )
   echo "backend: started (PID $(cat "$PIDS_DIR/backend.pid"))  →  logs/backend.log"
 fi
