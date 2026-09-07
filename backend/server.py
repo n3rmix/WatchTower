@@ -701,6 +701,282 @@ BASELINE_CONFLICTS = [
 ]
 
 
+# ─── COUNTER DISPLAY METADATA ────────────────────────────────────────────────
+# Full metadata for all 14 conflicts shown on the CounterPage.
+# 'country' maps to the 'country' field in the MongoDB conflicts collection;
+# None means the conflict has no live API backing and uses only the static base.
+# snap_date is the anchor date for base_cumulative; the endpoint overrides it
+# with the real last-fetch timestamp when live data is available.
+COUNTER_CONFLICTS_METADATA = [
+    {
+        'id': 'ukraine',
+        'name': 'Ukraine\u2013Russia War',
+        'country': 'Ukraine',
+        'region': 'Europe',
+        'start_date': '2022-02-24',
+        'flag': '\U0001f1fa\U0001f1e6',
+        'color': '#3b82f6',
+        'base_cumulative': 258000,
+        'snap_date': '2026-04-01T00:00:00Z',
+        'daily_rate': 220,
+        'child_deaths': 860,
+        'child_daily_rate': 0.57,
+        'child_source': 'UNICEF / OHCHR',
+        'child_source_url': 'https://www.unicefusa.org/press/significant-increase-number-children-killed-across-ukraine-year-deadly-attacks-continue',
+        'source': 'ACLED / UN OHCHR',
+        'source_url': 'https://acleddata.com',
+        'note': 'Includes military & civilian. Conservative estimate.',
+    },
+    {
+        'id': 'sudan',
+        'name': 'Sudan Civil War',
+        'country': 'Sudan',
+        'region': 'Africa',
+        'start_date': '2023-04-15',
+        'flag': '\U0001f1f8\U0001f1e9',
+        'color': '#ef4444',
+        'base_cumulative': 150000,
+        'snap_date': '2026-04-01T00:00:00Z',
+        'daily_rate': 180,
+        'child_deaths': 5200,
+        'child_daily_rate': 8,
+        'child_source': 'UNICEF Sudan',
+        'child_source_url': 'https://www.unicefusa.org/press/least-40-children-reportedly-killed-three-days-across-sudan-unicef',
+        'source': 'ACLED / UN OCHA',
+        'source_url': 'https://www.unocha.org/sudan',
+        'note': 'Includes famine-related and conflict deaths.',
+    },
+    {
+        'id': 'gaza',
+        'name': 'Gaza \u2014 Palestine',
+        'country': 'Gaza/Palestine',
+        'region': 'Middle East',
+        'start_date': '2023-10-07',
+        'flag': '\U0001f1f5\U0001f1f8',
+        'color': '#f97316',
+        'base_cumulative': 52000,
+        'snap_date': '2026-04-01T00:00:00Z',
+        'daily_rate': 35,
+        'child_deaths': 22000,
+        'child_daily_rate': 12,
+        'child_source': 'Save the Children / Gaza MoH',
+        'child_source_url': 'https://www.savethechildren.net/news/gaza-20000-children-killed-23-months-war-more-one-child-killed-every-hour',
+        'source': 'WHO / Gaza MoH / Lancet',
+        'source_url': 'https://www.ochaopt.org',
+        'note': 'Verified reported deaths. Excess mortality est. up to 186k.',
+    },
+    {
+        'id': 'myanmar',
+        'name': 'Myanmar Civil War',
+        'country': 'Myanmar',
+        'region': 'Asia',
+        'start_date': '2021-02-01',
+        'flag': '\U0001f1f2\U0001f1f2',
+        'color': '#a855f7',
+        'base_cumulative': 50000,
+        'snap_date': '2026-04-01T00:00:00Z',
+        'daily_rate': 55,
+        'child_deaths': 820,
+        'child_daily_rate': 1.2,
+        'child_source': 'AAPP / UNICEF Myanmar',
+        'child_source_url': 'https://acleddata.com',
+        'source': 'ACLED / AAPP / UN',
+        'source_url': 'https://acleddata.com',
+        'note': 'Since February 2021 coup.',
+    },
+    {
+        'id': 'nigeria',
+        'name': 'Nigeria \u2014 Multi-Conflict',
+        'country': None,
+        'region': 'Africa',
+        'start_date': '2009-07-26',
+        'flag': '\U0001f1f3\U0001f1ec',
+        'color': '#22c55e',
+        'base_cumulative': 35000,
+        'snap_date': '2026-04-01T00:00:00Z',
+        'daily_rate': 30,
+        'child_deaths': 600,
+        'child_daily_rate': 0.8,
+        'child_source': 'UNICEF Nigeria / ACLED',
+        'child_source_url': 'https://acleddata.com',
+        'source': 'ACLED',
+        'source_url': 'https://acleddata.com',
+        'note': 'Boko Haram/ISWAP + regional conflicts from 2020.',
+    },
+    {
+        'id': 'syria',
+        'name': 'Syria',
+        'country': 'Syria',
+        'region': 'Middle East',
+        'start_date': '2011-03-15',
+        'flag': '\U0001f1f8\U0001f1fe',
+        'color': '#06b6d4',
+        'base_cumulative': 500000,
+        'snap_date': '2026-04-01T00:00:00Z',
+        'daily_rate': 15,
+        'child_deaths': 15000,
+        'child_daily_rate': 0.4,
+        'child_source': 'UNICEF Syria / SNHR',
+        'child_source_url': 'https://ucdp.uu.se',
+        'source': 'UCDP / SNHR',
+        'source_url': 'https://ucdp.uu.se',
+        'note': 'Cumulative since 2011. Renewed fighting in 2024\u201325.',
+    },
+    {
+        'id': 'somalia',
+        'name': 'Somalia \u2014 al-Shabaab',
+        'country': None,
+        'region': 'Africa',
+        'start_date': '2007-01-01',
+        'flag': '\U0001f1f8\U0001f1f4',
+        'color': '#84cc16',
+        'base_cumulative': 30000,
+        'snap_date': '2026-04-01T00:00:00Z',
+        'daily_rate': 18,
+        'child_deaths': 600,
+        'child_daily_rate': 0.5,
+        'child_source': 'UNICEF Somalia',
+        'child_source_url': 'https://acleddata.com',
+        'source': 'ACLED / UN',
+        'source_url': 'https://acleddata.com',
+        'note': 'From 2020 onward.',
+    },
+    {
+        'id': 'haiti',
+        'name': 'Haiti \u2014 Gang Violence',
+        'country': 'Haiti',
+        'region': 'Americas',
+        'start_date': '2021-07-07',
+        'flag': '\U0001f1ed\U0001f1f9',
+        'color': '#f59e0b',
+        'base_cumulative': 8500,
+        'snap_date': '2026-04-01T00:00:00Z',
+        'daily_rate': 12,
+        'child_deaths': 350,
+        'child_daily_rate': 0.4,
+        'child_source': 'UNICEF Haiti / BINUH',
+        'child_source_url': 'https://acleddata.com',
+        'source': 'ACLED / BINUH',
+        'source_url': 'https://acleddata.com',
+        'note': 'From 2022 gang conflict escalation.',
+    },
+    {
+        'id': 'ethiopia',
+        'name': 'Ethiopia (Tigray & Amhara)',
+        'country': 'Ethiopia',
+        'region': 'Africa',
+        'start_date': '2020-11-04',
+        'flag': '\U0001f1ea\U0001f1f9',
+        'color': '#ec4899',
+        'base_cumulative': 300000,
+        'snap_date': '2026-04-01T00:00:00Z',
+        'daily_rate': 25,
+        'child_deaths': 8000,
+        'child_daily_rate': 1.5,
+        'child_source': 'PMC/NIH Tigray Study / HRW',
+        'child_source_url': 'https://pmc.ncbi.nlm.nih.gov/articles/PMC12096794/',
+        'source': 'ACLED / UN',
+        'source_url': 'https://acleddata.com',
+        'note': 'Includes Tigray war + ongoing Amhara/Oromia violence.',
+    },
+    {
+        'id': 'mexico',
+        'name': 'Mexico \u2014 Cartel Wars',
+        'country': None,
+        'region': 'Americas',
+        'start_date': '2006-12-11',
+        'flag': '\U0001f1f2\U0001f1fd',
+        'color': '#64748b',
+        'base_cumulative': 45000,
+        'snap_date': '2026-04-01T00:00:00Z',
+        'daily_rate': 20,
+        'child_deaths': 500,
+        'child_daily_rate': 0.3,
+        'child_source': 'INEGI / ACLED',
+        'child_source_url': 'https://acleddata.com',
+        'source': 'ACLED / INEGI',
+        'source_url': 'https://acleddata.com',
+        'note': 'Organized crime / cartel violence from 2020.',
+    },
+    {
+        'id': 'lebanon',
+        'name': 'Lebanon \u2014 Israel War',
+        'country': 'Lebanon',
+        'region': 'Middle East',
+        'start_date': '2024-10-01',
+        'flag': '\U0001f1f1\U0001f1e7',
+        'color': '#14b8a6',
+        'base_cumulative': 6000,
+        'snap_date': '2026-04-01T00:00:00Z',
+        'daily_rate': 50,
+        'child_deaths': 575,
+        'child_daily_rate': 6.5,
+        'child_source': 'Lebanese Health Ministry / WHO EMRO',
+        'child_source_url': 'https://www.emro.who.int/en/lebanon/index.html',
+        'source': 'Lebanese Health Ministry / UN OCHA / UNIFIL',
+        'source_url': 'https://www.unocha.org/lebanon',
+        'note': 'Oct 2024 Israeli invasion + resumed war from Mar 2, 2026.',
+    },
+    {
+        'id': 'iran-2026',
+        'name': 'Iran War (US\u2013Israel)',
+        'country': None,
+        'region': 'Middle East',
+        'start_date': '2026-02-28',
+        'flag': '\U0001f1ee\U0001f1f7',
+        'color': '#10b981',
+        'base_cumulative': 2600,
+        'snap_date': '2026-04-01T00:00:00Z',
+        'daily_rate': 45,
+        'child_deaths': 280,
+        'child_daily_rate': 3,
+        'child_source': 'Amnesty International / Iran MoH',
+        'child_source_url': 'https://www.amnesty.org/en/latest/news/2026/03/usa-iran-those-responsible-for-deadly-and-unlawful-us-strike-on-school-that-killed-over-100-children-must-be-held-accountable/',
+        'source': 'Al Jazeera / Iran MoH / Wikipedia',
+        'source_url': 'https://en.wikipedia.org/wiki/2026_Iran_war',
+        'note': 'US\u2013Israel strikes from Feb 28, 2026.',
+    },
+    {
+        'id': 'iran-2025',
+        'name': 'Twelve-Day War (Iran\u2013Israel)',
+        'country': None,
+        'region': 'Middle East',
+        'start_date': '2025-06-13',
+        'flag': '\U0001f1ee\U0001f1f7',
+        'color': '#f43f5e',
+        'base_cumulative': 1270,
+        'snap_date': '2026-04-01T00:00:00Z',
+        'daily_rate': 0,
+        'child_deaths': 240,
+        'child_daily_rate': 0,
+        'child_source': 'Iranian Government / Wikipedia',
+        'child_source_url': 'https://en.wikipedia.org/wiki/Twelve-Day_War',
+        'source': 'Wikipedia / HRANA / Israeli MoH',
+        'source_url': 'https://en.wikipedia.org/wiki/Twelve-Day_War',
+        'note': 'Ended June 24, 2025. Iran: ~1,190 killed; Israel: 28 killed.',
+    },
+    {
+        'id': 'iran-protests-2026',
+        'name': 'Iran \u2014 Protest Crackdown',
+        'country': None,
+        'region': 'Middle East',
+        'start_date': '2025-12-28',
+        'flag': '\U0001f1ee\U0001f1f7',
+        'color': '#c084fc',
+        'base_cumulative': 7007,
+        'snap_date': '2026-04-01T00:00:00Z',
+        'daily_rate': 0,
+        'child_deaths': 150,
+        'child_daily_rate': 0,
+        'child_source': 'HRANA',
+        'child_source_url': 'https://hranaenglish.com',
+        'source': 'HRANA / Iran Human Rights',
+        'source_url': 'https://hranaenglish.com',
+        'note': 'Jan 2026 crackdown on anti-government protests.',
+    },
+]
+
+
 def _build_records(
     now: datetime,
     primary_deaths: Dict[str, int],
@@ -1107,6 +1383,49 @@ async def get_last_update():
         "next_fetch_in_minutes": next_fetch_in_minutes,
     }
 
+
+
+@api_router.get("/counter-conflicts")
+async def get_counter_conflicts():
+    """
+    Return all 14 counter conflicts with live death totals merged in.
+    For conflicts with a 'country' mapping, the base_cumulative is overridden
+    by the live MongoDB figure when it exceeds the static baseline projected to
+    the snap_date. Returns snap_date = last fetched_at for live conflicts.
+    """
+    # Fetch live data
+    live_list = await db.conflicts.find({}, {"_id": 0}).to_list(1000)
+    live_by_country = {c["country"]: c for c in live_list}
+    meta = await db.system_metadata.find_one({"key": "last_fetch"}, {"_id": 0})
+    fetched_at = meta.get("fetched_at") if meta else None
+
+    STATIC_SNAP = "2026-04-01T00:00:00Z"
+
+    result = []
+    for m in COUNTER_CONFLICTS_METADATA:
+        conf = dict(m)
+        country = conf.get("country")
+
+        if country and country in live_by_country and fetched_at:
+            live = live_by_country[country]
+            api_total = live.get("total_deaths") or 0
+            api_children = live.get("children_deaths") or 0
+
+            # Project the static base forward to fetched_at to compare fairly
+            static_snap = datetime.fromisoformat(STATIC_SNAP.replace("Z", "+00:00"))
+            fetch_dt = datetime.fromisoformat(fetched_at)
+            days_since = max(0, (fetch_dt - static_snap).total_seconds() / 86400)
+            projected = conf["base_cumulative"] + int(days_since * conf["daily_rate"])
+
+            if api_total > projected:
+                conf["base_cumulative"] = api_total
+                conf["snap_date"] = fetched_at
+
+            conf["child_deaths"] = max(api_children, conf["child_deaths"])
+
+        result.append(conf)
+
+    return {"fetched_at": fetched_at, "conflicts": result}
 
 
 @api_router.get("/stats")

@@ -5,325 +5,55 @@ import GdeltAlertTicker from '../components/GdeltAlertTicker';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 
-// ─── BASELINE DATA (ported from conflict-counter/data.js) ─────────────────────
-// Cumulative deaths anchored at April 1, 2026. Sources: ACLED, UCDP, UN, OCHA.
-const BASELINE_CONFLICTS = [
-  {
-    id: 'ukraine',
-    name: 'Ukraine–Russia War',
-    region: 'Europe',
-    startDate: '2022-02-24',
-    baseCumulative: 258000,
-    dailyRate: 220,
-    childDeaths: 860,
-    childDailyRate: 0.57,
-    childSource: 'UNICEF / OHCHR',
-    childSourceUrl: 'https://www.unicefusa.org/press/significant-increase-number-children-killed-across-ukraine-year-deadly-attacks-continue',
-    color: '#3b82f6',
-    flag: '🇺🇦',
-    source: 'ACLED / UN OHCHR',
-    sourceUrl: 'https://acleddata.com',
-    note: 'Includes military & civilian. Conservative estimate.',
-  },
-  {
-    id: 'sudan',
-    name: 'Sudan Civil War',
-    region: 'Africa',
-    startDate: '2023-04-15',
-    baseCumulative: 150000,
-    dailyRate: 180,
-    childDeaths: 5200,
-    childDailyRate: 8,
-    childSource: 'UNICEF Sudan',
-    childSourceUrl: 'https://www.unicefusa.org/press/least-40-children-reportedly-killed-three-days-across-sudan-unicef',
-    color: '#ef4444',
-    flag: '🇸🇩',
-    source: 'ACLED / UN OCHA',
-    sourceUrl: 'https://www.unocha.org/sudan',
-    note: 'Includes famine-related and conflict deaths.',
-  },
-  {
-    id: 'gaza',
-    name: 'Gaza — Palestine',
-    region: 'Middle East',
-    startDate: '2023-10-07',
-    baseCumulative: 52000,
-    dailyRate: 35,
-    childDeaths: 22000,
-    childDailyRate: 12,
-    childSource: 'Save the Children / Gaza MoH',
-    childSourceUrl: 'https://www.savethechildren.net/news/gaza-20000-children-killed-23-months-war-more-one-child-killed-every-hour',
-    color: '#f97316',
-    flag: '🇵🇸',
-    source: 'WHO / Gaza MoH / Lancet',
-    sourceUrl: 'https://www.ochaopt.org',
-    note: 'Verified reported deaths. Excess mortality est. up to 186k.',
-  },
-  {
-    id: 'myanmar',
-    name: 'Myanmar Civil War',
-    region: 'Asia',
-    startDate: '2021-02-01',
-    baseCumulative: 50000,
-    dailyRate: 55,
-    childDeaths: 820,
-    childDailyRate: 1.2,
-    childSource: 'AAPP / UNICEF Myanmar',
-    childSourceUrl: 'https://acleddata.com',
-    color: '#a855f7',
-    flag: '🇲🇲',
-    source: 'ACLED / AAPP / UN',
-    sourceUrl: 'https://acleddata.com',
-    note: 'Since February 2021 coup.',
-  },
-  {
-    id: 'nigeria',
-    name: 'Nigeria — Multi-Conflict',
-    region: 'Africa',
-    startDate: '2009-07-26',
-    baseCumulative: 35000,
-    dailyRate: 30,
-    childDeaths: 600,
-    childDailyRate: 0.8,
-    childSource: 'UNICEF Nigeria / ACLED',
-    childSourceUrl: 'https://acleddata.com',
-    color: '#22c55e',
-    flag: '🇳🇬',
-    source: 'ACLED',
-    sourceUrl: 'https://acleddata.com',
-    note: 'Boko Haram/ISWAP + regional conflicts from 2020.',
-  },
-  {
-    id: 'syria',
-    name: 'Syria',
-    region: 'Middle East',
-    startDate: '2011-03-15',
-    baseCumulative: 500000,
-    dailyRate: 15,
-    childDeaths: 15000,
-    childDailyRate: 0.4,
-    childSource: 'UNICEF Syria / SNHR',
-    childSourceUrl: 'https://ucdp.uu.se',
-    color: '#06b6d4',
-    flag: '🇸🇾',
-    source: 'UCDP / SNHR',
-    sourceUrl: 'https://ucdp.uu.se',
-    note: 'Cumulative since 2011. Renewed fighting in 2024–25.',
-  },
-  {
-    id: 'somalia',
-    name: 'Somalia — al-Shabaab',
-    region: 'Africa',
-    startDate: '2007-01-01',
-    baseCumulative: 30000,
-    dailyRate: 18,
-    childDeaths: 600,
-    childDailyRate: 0.5,
-    childSource: 'UNICEF Somalia',
-    childSourceUrl: 'https://acleddata.com',
-    color: '#84cc16',
-    flag: '🇸🇴',
-    source: 'ACLED / UN',
-    sourceUrl: 'https://acleddata.com',
-    note: 'From 2020 onward.',
-  },
-  {
-    id: 'haiti',
-    name: 'Haiti — Gang Violence',
-    region: 'Americas',
-    startDate: '2021-07-07',
-    baseCumulative: 8500,
-    dailyRate: 12,
-    childDeaths: 350,
-    childDailyRate: 0.4,
-    childSource: 'UNICEF Haiti / BINUH',
-    childSourceUrl: 'https://acleddata.com',
-    color: '#f59e0b',
-    flag: '🇭🇹',
-    source: 'ACLED / BINUH',
-    sourceUrl: 'https://acleddata.com',
-    note: 'From 2022 gang conflict escalation.',
-  },
-  {
-    id: 'ethiopia',
-    name: 'Ethiopia (Tigray & Amhara)',
-    region: 'Africa',
-    startDate: '2020-11-04',
-    baseCumulative: 300000,
-    dailyRate: 25,
-    childDeaths: 8000,
-    childDailyRate: 1.5,
-    childSource: 'PMC/NIH Tigray Study / HRW',
-    childSourceUrl: 'https://pmc.ncbi.nlm.nih.gov/articles/PMC12096794/',
-    color: '#ec4899',
-    flag: '🇪🇹',
-    source: 'ACLED / UN',
-    sourceUrl: 'https://acleddata.com',
-    note: 'Includes Tigray war + ongoing Amhara/Oromia violence.',
-  },
-  {
-    id: 'mexico',
-    name: 'Mexico — Cartel Wars',
-    region: 'Americas',
-    startDate: '2006-12-11',
-    baseCumulative: 45000,
-    dailyRate: 20,
-    childDeaths: 500,
-    childDailyRate: 0.3,
-    childSource: 'INEGI / ACLED',
-    childSourceUrl: 'https://acleddata.com',
-    color: '#64748b',
-    flag: '🇲🇽',
-    source: 'ACLED / INEGI',
-    sourceUrl: 'https://acleddata.com',
-    note: 'Organized crime / cartel violence from 2020.',
-  },
-  {
-    id: 'lebanon',
-    name: 'Lebanon — Israel War',
-    region: 'Middle East',
-    startDate: '2024-10-01',
-    baseCumulative: 6000,
-    dailyRate: 50,
-    childDeaths: 575,
-    childDailyRate: 6.5,
-    childSource: 'Lebanese Health Ministry / WHO EMRO',
-    childSourceUrl: 'https://www.emro.who.int/en/lebanon/index.html',
-    color: '#14b8a6',
-    flag: '🇱🇧',
-    source: 'Lebanese Health Ministry / UN OCHA / UNIFIL',
-    sourceUrl: 'https://www.unocha.org/lebanon',
-    note: 'Oct 2024 Israeli invasion + resumed war from Mar 2, 2026. Apr 8 "Black Wednesday": 357 killed in one day.',
-  },
-  {
-    id: 'iran-2026',
-    name: 'Iran War (US–Israel)',
-    region: 'Middle East',
-    startDate: '2026-02-28',
-    baseCumulative: 2600,
-    dailyRate: 45,
-    childDeaths: 280,
-    childDailyRate: 3,
-    childSource: 'Amnesty International / Iran MoH',
-    childSourceUrl: 'https://www.amnesty.org/en/latest/news/2026/03/usa-iran-those-responsible-for-deadly-and-unlawful-us-strike-on-school-that-killed-over-100-children-must-be-held-accountable/',
-    color: '#10b981',
-    flag: '🇮🇷',
-    source: 'Al Jazeera / Iran MoH / Wikipedia',
-    sourceUrl: 'https://en.wikipedia.org/wiki/2026_Iran_war',
-    note: 'US–Israel strikes from Feb 28, 2026.',
-  },
-  {
-    id: 'iran-2025',
-    name: 'Twelve-Day War (Iran–Israel)',
-    region: 'Middle East',
-    startDate: '2025-06-13',
-    baseCumulative: 1270,
-    dailyRate: 0,
-    childDeaths: 240,
-    childDailyRate: 0,
-    childSource: 'Iranian Government / Wikipedia',
-    childSourceUrl: 'https://en.wikipedia.org/wiki/Twelve-Day_War',
-    color: '#f43f5e',
-    flag: '🇮🇷',
-    source: 'Wikipedia / HRANA / Israeli MoH',
-    sourceUrl: 'https://en.wikipedia.org/wiki/Twelve-Day_War',
-    note: 'Ended June 24, 2025. Iran: ~1,190 killed; Israel: 28 killed.',
-  },
-  {
-    id: 'iran-protests-2026',
-    name: 'Iran — Protest Crackdown',
-    region: 'Middle East',
-    startDate: '2025-12-28',
-    baseCumulative: 7007,
-    dailyRate: 0,
-    childDeaths: 150,
-    childDailyRate: 0,
-    childSource: 'HRANA',
-    childSourceUrl: 'https://hranaenglish.com',
-    color: '#c084fc',
-    flag: '🇮🇷',
-    source: 'HRANA / Iran Human Rights',
-    sourceUrl: 'https://hranaenglish.com',
-    note: 'Jan 2026 crackdown on anti-government protests.',
-  },
-];
-
 // ─── DATA LOGIC ───────────────────────────────────────────────────────────────
-const BASELINE_DATE = new Date('2026-04-01T00:00:00Z');
-
-// Maps Counter conflict IDs to backend API country names.
-// Conflicts not listed here (Nigeria, Somalia, Mexico, Iran variants) stay hardcoded.
-const API_COUNTRY_MAP = {
-  'ukraine':  'Ukraine',
-  'sudan':    'Sudan',
-  'gaza':     'Gaza/Palestine',
-  'myanmar':  'Myanmar',
-  'syria':    'Syria',
-  'haiti':    'Haiti',
-  'ethiopia': 'Ethiopia',
-  'lebanon':  'Lebanon',
-};
 
 function estimateCurrentDeaths(conflict) {
-  const base = conflict.snapDate || BASELINE_DATE;
-  const daysElapsed = (Date.now() - base) / 86400000;
-  return conflict.baseCumulative + Math.max(0, Math.floor(daysElapsed * conflict.dailyRate));
+  const snap = new Date(conflict.snapDate);
+  const daysElapsed = Math.max(0, (Date.now() - snap) / 86400000);
+  return conflict.baseCumulative + Math.floor(daysElapsed * conflict.dailyRate);
 }
 
 function estimateCurrentChildDeaths(conflict) {
-  const base = conflict.snapDate || BASELINE_DATE;
-  const daysElapsed = Math.max(0, (Date.now() - base) / 86400000);
-  return (conflict.childDeaths || 0) + Math.floor(daysElapsed * (conflict.childDailyRate || 0));
+  const snap = new Date(conflict.snapDate);
+  const daysElapsed = Math.max(0, (Date.now() - snap) / 86400000);
+  return conflict.childDeaths + Math.floor(daysElapsed * conflict.childDailyRate);
 }
 
-function estimateYTDDeaths() {
-  const startOfYear = new Date('2026-01-01T00:00:00Z');
-  const daysElapsed = (Date.now() - startOfYear) / 86400000;
-  return Math.floor(daysElapsed * 657); // ~657/day global rate (ACLED 2025 index)
+function estimateYTDDeaths(conflicts) {
+  const yearStart = new Date('2026-01-01T00:00:00Z');
+  return conflicts.reduce((sum, c) => {
+    if (c.dailyRate === 0) return sum;
+    const from = new Date(Math.max(new Date(c.startDate).getTime(), yearStart.getTime()));
+    const days = Math.max(0, (Date.now() - from) / 86400000);
+    return sum + Math.floor(days * c.dailyRate);
+  }, 0);
 }
 
 async function loadConflictData() {
-  // Start with hardcoded baselines as fallback
-  let mergedBaselines = BASELINE_CONFLICTS.map(c => ({ ...c }));
-  let sourcesUpdatedAt = null;
+  const res = await axios.get(`${BACKEND_URL}/api/counter-conflicts`);
+  const { fetched_at, conflicts: raw } = res.data;
 
-  try {
-    const [conflictsRes, lastUpdateRes] = await Promise.all([
-      axios.get(`${BACKEND_URL}/api/conflicts`),
-      axios.get(`${BACKEND_URL}/api/last-update`),
-    ]);
+  // Map snake_case API fields to camelCase for component use
+  const baseConflicts = raw.map(c => ({
+    id: c.id,
+    name: c.name,
+    region: c.region,
+    startDate: c.start_date,
+    flag: c.flag,
+    color: c.color,
+    baseCumulative: c.base_cumulative,
+    snapDate: c.snap_date,
+    dailyRate: c.daily_rate,
+    childDeaths: c.child_deaths,
+    childDailyRate: c.child_daily_rate,
+    childSource: c.child_source,
+    childSourceUrl: c.child_source_url,
+    source: c.source,
+    sourceUrl: c.source_url,
+    note: c.note,
+  }));
 
-    const apiConflicts = conflictsRes.data;
-    const lu = lastUpdateRes.data;
-    if (lu?.fetched_at) sourcesUpdatedAt = new Date(lu.fetched_at);
-    const snapDate = sourcesUpdatedAt || BASELINE_DATE;
-
-    // Override baseCumulative + childDeaths for API-matched conflicts only when
-    // the API figure is higher than the hardcoded estimate projected to snapDate.
-    // This ensures the Counter never regresses when the API uses a more
-    // conservative methodology (e.g. Sudan: API 70k vs Counter 150k).
-    mergedBaselines = mergedBaselines.map(c => {
-      const apiCountry = API_COUNTRY_MAP[c.id];
-      if (!apiCountry) return c;
-      const api = apiConflicts.find(a => a.country === apiCountry);
-      if (!api) return c;
-
-      const daysSinceBaseline = Math.max(0, (snapDate - BASELINE_DATE) / 86400000);
-      const projectedHardcoded = c.baseCumulative + Math.floor(daysSinceBaseline * c.dailyRate);
-      if (api.total_deaths <= projectedHardcoded) return c; // keep hardcoded — it's higher
-
-      return {
-        ...c,
-        baseCumulative: api.total_deaths,
-        childDeaths: Math.max(api.children_deaths ?? 0, c.childDeaths ?? 0),
-        snapDate,
-      };
-    });
-  } catch {
-    // Non-fatal: counter still works from hardcoded baselines
-  }
-
-  const conflicts = mergedBaselines.map(c => ({
+  const conflicts = baseConflicts.map(c => ({
     ...c,
     currentDeaths: estimateCurrentDeaths(c),
     currentChildDeaths: estimateCurrentChildDeaths(c),
@@ -332,17 +62,14 @@ async function loadConflictData() {
     }),
   }));
 
-  const totalDeaths = conflicts.reduce((s, c) => s + c.currentDeaths, 0);
-  const totalChildDeaths = conflicts.reduce((s, c) => s + c.currentChildDeaths, 0);
-  const childDailyRateTotal = mergedBaselines.reduce((s, c) => s + (c.childDailyRate || 0), 0);
-
   return {
     conflicts,
-    totalDeaths,
-    totalChildDeaths,
-    childDailyRateTotal,
-    ytdDeaths: estimateYTDDeaths(),
-    sourcesUpdatedAt,
+    totalDeaths: conflicts.reduce((s, c) => s + c.currentDeaths, 0),
+    totalChildDeaths: conflicts.reduce((s, c) => s + c.currentChildDeaths, 0),
+    childDailyRateTotal: baseConflicts.reduce((s, c) => s + c.childDailyRate, 0),
+    ytdDeaths: estimateYTDDeaths(baseConflicts),
+    sourcesUpdatedAt: fetched_at ? new Date(fetched_at) : null,
+    fetchedAt: fetched_at ?? null,
   };
 }
 
@@ -357,20 +84,6 @@ function fmtShort(n) {
   return fmt(n);
 }
 
-function timeAgo(date) {
-  if (!date) return '';
-  const secs = Math.round((Date.now() - date) / 1000);
-  if (secs < 10) return 'just now';
-  if (secs < 60) return `${secs}s ago`;
-  const mins = Math.round(secs / 60);
-  if (mins < 60) return `${mins}m ago`;
-  return `${Math.round(mins / 60)}h ago`;
-}
-
-function elapsedDays(dateStr) {
-  return Math.floor((Date.now() - new Date(dateStr)) / 86400000);
-}
-
 function easeOutExpo(t) {
   return t === 1 ? 1 : 1 - Math.pow(2, -10 * t);
 }
@@ -378,7 +91,6 @@ function easeOutExpo(t) {
 // ─── CONFLICT CARD ────────────────────────────────────────────────────────────
 function ConflictCard({ conflict, maxDeaths }) {
   const pct = Math.min((conflict.currentDeaths / Math.max(maxDeaths, 1)) * 100, 100);
-  const days = elapsedDays(conflict.startDate);
 
   return (
     <div className="bg-zinc-900 border border-zinc-800 p-4 flex flex-col gap-3 hover:border-zinc-700 transition-colors">
@@ -484,7 +196,7 @@ function ChildrenBreakdown({ conflicts }) {
 // ─── MAIN PAGE ────────────────────────────────────────────────────────────────
 export default function CounterPage() {
   const [data, setData] = useState(null);
-  const [status, setStatus] = useState('loading'); // 'loading' | 'live' | 'cached'
+  const [status, setStatus] = useState('loading'); // 'loading' | 'live' | 'offline'
   const [sourcesUpdatedAt, setSourcesUpdatedAt] = useState(null);
 
   // Refs for direct DOM counter updates (avoids re-render on every RAF tick)
@@ -492,7 +204,7 @@ export default function CounterPage() {
   const childCounterRef = useRef(null);
   const tickRef = useRef(null); // { total, childTotal, totalDailyRate, childDailyRateTotal }
   // Tracks the last backend fetched_at seen — used by the smart poll to detect
-  // when refresh_all_data() has fired without hammering /api/conflicts.
+  // when refresh_all_data() has fired without hammering /api/counter-conflicts.
   const lastFetchedAt = useRef(null);
 
   // ── Animation ──────────────────────────────────────────────────────────────
@@ -518,11 +230,11 @@ export default function CounterPage() {
       const prevChildTotal = tickRef.current?.childTotal ?? 0;
 
       setData(d);
+      if (d.fetchedAt) {
+        lastFetchedAt.current = d.fetchedAt;
+      }
       if (d.sourcesUpdatedAt) {
         setSourcesUpdatedAt(d.sourcesUpdatedAt);
-        // Seed the smart-poll baseline so the first 60s check doesn't
-        // immediately re-fire fetchAndRender against data we just loaded.
-        lastFetchedAt.current = d.sourcesUpdatedAt.toISOString();
       }
       setStatus('live');
 
@@ -540,15 +252,14 @@ export default function CounterPage() {
       animateCounter(childCounterRef, prevChildTotal, d.totalChildDeaths, isFirst ? 2000 : 800);
     } catch (err) {
       console.error('Counter fetch failed:', err);
-      setStatus('cached');
+      setStatus('offline');
     }
   }, [animateCounter]);
 
   // ── Mount: initial fetch + smart poll ─────────────────────────────────────
   // On mount, fetch immediately. Then every 60s check /api/last-update (cheap
   // single-doc read). Only call fetchAndRender() when fetched_at has changed,
-  // meaning the backend's hourly refresh_all_data() just completed. This keeps
-  // the counter in sync within ~60s of new data without a fixed 1h wait.
+  // meaning the backend's hourly refresh_all_data() just completed.
   useEffect(() => {
     fetchAndRender();
 
@@ -557,7 +268,6 @@ export default function CounterPage() {
         const { data: lu } = await axios.get(`${BACKEND_URL}/api/last-update`);
         const fetchedAt = lu?.fetched_at ?? null;
         if (fetchedAt && fetchedAt !== lastFetchedAt.current) {
-          lastFetchedAt.current = fetchedAt;
           fetchAndRender();
         }
       } catch {
@@ -601,7 +311,7 @@ export default function CounterPage() {
               Live Conflict Death Counter
             </h2>
             <p className="text-[10px] font-mono text-zinc-500 mt-0.5">
-              Real-time estimates · {conflicts.length} active conflicts · interpolated from verified baselines
+              Real-time estimates · {conflicts.length} tracked conflicts · interpolated from verified baselines
             </p>
           </div>
           {/* Status indicator */}
@@ -615,7 +325,7 @@ export default function CounterPage() {
               }}
             />
             <span className="text-[9px] font-mono text-zinc-500 uppercase tracking-wider">
-              {status === 'live' ? 'Live estimates' : status === 'loading' ? 'Refreshing…' : 'Cached data'}
+              {status === 'live' ? 'Live' : status === 'loading' ? 'Refreshing…' : 'Offline'}
             </span>
           </div>
         </div>
@@ -626,7 +336,6 @@ export default function CounterPage() {
 
           {/* ── Hero counter ── */}
           <section className="text-center space-y-3 py-6">
-            {/* Atmospheric glow */}
             <div
               className="absolute left-1/2 -translate-x-1/2 w-96 h-48 pointer-events-none"
               style={{
@@ -653,8 +362,10 @@ export default function CounterPage() {
                   })}
                   <span className="text-zinc-800"> · ACLED · UCDP · UN</span>
                 </>
-              ) : (
+              ) : status === 'loading' ? (
                 'Loading…'
+              ) : (
+                'Baselines from Apr 2026 · awaiting live update'
               )}
             </p>
           </section>
@@ -668,9 +379,9 @@ export default function CounterPage() {
                 sub: 'year-to-date',
               },
               {
-                label: 'Active Conflicts',
+                label: 'Tracked Conflicts',
                 value: conflicts.length || '—',
-                sub: 'tracked zones',
+                sub: 'active + recent',
               },
               {
                 label: 'Deaths / Day',
@@ -780,9 +491,9 @@ export default function CounterPage() {
           {/* ── Footer / attribution ── */}
           <footer className="border-t border-zinc-800 pt-6 pb-8 space-y-3">
             <p className="text-[9px] font-mono text-zinc-700 leading-relaxed max-w-2xl">
-              All figures are estimates derived from verified baseline data anchored April 1, 2026,
-              interpolated forward using conflict-specific daily death rates. Figures represent
-              minimum documented deaths and are consistently lower than true totals.
+              Death figures are served by the WatchTower backend, which queries ACLED, UCDP, UN OHCHR,
+              and OCHA hourly. Between fetches, counts are interpolated forward using conflict-specific
+              daily death rates. All figures represent minimum documented deaths; true totals are higher.
               Children death data from UNICEF, Save the Children, AAPP, and conflict-specific monitors.
             </p>
             <div className="flex flex-wrap gap-x-4 gap-y-1">
