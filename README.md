@@ -2,15 +2,13 @@
 
 <div align="center">
 
-**Real-Time Global Conflict Monitoring Dashboard**
+**Real-Time Global Conflict Death Counter**
 
-A comprehensive, data-driven platform for tracking ongoing global conflicts, casualty statistics, and geopolitical analysis from multiple verified sources.
+A data-driven platform tracking ongoing global conflict death tolls in real time, interpolated from verified international sources.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 [Features](#features) • [Tech Stack](#tech-stack) • [Installation](#installation) • [Data Sources](#data-sources) • [API](#api-documentation)
-
-
 
 </div>
 
@@ -18,99 +16,74 @@ A comprehensive, data-driven platform for tracking ongoing global conflicts, cas
 
 ## Overview
 
-WatchTower is a real-time conflict monitoring system that aggregates casualty data, armed group information, geopolitical news, and near-real-time media-attention signals from credible international sources. The platform provides transparent, data-backed insights into 11 major global conflicts affecting millions of people worldwide — plus a full historical perspective across every UCDP-tracked conflict since 1946.
+WatchTower is a real-time conflict death counter that aggregates casualty data from credible international sources and projects live estimates forward using conflict-specific daily death rates. It tracks 14 conflicts — active and recently concluded — giving an honest, continuously updated picture of the human cost of war.
 
-**Total Tracked:** 11 active conflicts | 60+ news articles | Live data from UCDP · ACLED · OHCHR/OCHA · Hengaw/IHR · GDELT — refreshed every hour
+**Total Tracked:** 14 conflicts | Live estimates interpolated from verified baselines | Data from UCDP · ACLED · UN OHCHR · OCHA — refreshed every hour
 
 ---
 
 ## Features
 
-### Core Capabilities
+### Live Death Counter
 
-- **Real-Time Statistics Dashboard**
-  - Total deaths, civilian, military, and children breakdowns
-  - 9 active conflicts with live indicators
-  - Breakdown by country, region, and casualty type
+- **Real-time hero counter** — total estimated deaths across all tracked conflicts, animated to the second using per-conflict daily death rates
+- **Children counter** — running estimate of child deaths across all conflicts, sourced from UNICEF, Save the Children, and conflict-specific monitors
+- **Stat pills** — Deaths in 2026 (YTD), active conflicts, global deaths per day
+- **Rate indicators** — deaths per hour and deaths per minute
 
-- **Comprehensive Conflict Details**
-  - Descriptions with historical context for each conflict
-  - All conflicting parties (countries, armed groups, militias, factions)
-  - Transparent data source attribution per conflict row
+### GDELT Alert Ticker
 
-- **Interactive Data Visualizations**
-  - Spinning WebGL globe with pulsing markers at all 9 active conflict regions, alongside a **casualty heatmap** — a 9-conflict × 4-metric grid (Total / Civilian / Military / Children) with cells coloured black→red by column-normalised intensity and hover tooltips showing raw counts and percentage of column maximum
-  - Casualty breakdown pie chart (civilian vs military) — sourced exclusively from UCDP + OHCHR/OCHA
-  - Deaths by country bar chart — sourced exclusively from UCDP + OHCHR/OCHA
-  - Responsive design with tactical/situation room aesthetic
+- Breaking geopolitical headlines pulled from GDELT DOC 2.0
+- Auto-scrolling feed of media-detected conflict escalation signals
 
-- **Human Cost Treemap** (`/human-cost`)
-  - Zoomable treemap spanning **every UCDP-tracked conflict since 1946** (~200+ conflicts across 5 world regions)
-  - **Tile area ∝ cumulative `bd_best` battle-deaths** since each conflict's onset — giving an immediate proportional view of global suffering
-  - **Drill-down:** top-level tiles are world regions (Africa, Asia, Middle East, Europe, Americas); click any region to zoom into its individual conflicts at full canvas size; breadcrumb + back button to return
-  - **Colour temperature** encodes recency — cool blue for conflicts last active decades ago, deep red for conflicts with deaths recorded in 2023–24
-  - Floating hover tooltip showing conflict name, location, cumulative deaths, and last recorded year
-  - Colour-scale legend with year labels rendered beneath the chart
+### Children Breakdown
 
-- **Actor Accountability Tracker** (`/actor-tracker`)
-  - Dedicated view for One-Sided Violence perpetrator profiling backed by the UCDP datasets
-  - **Step 1 — Configure:** Select a country (all 8 UCDP-covered conflicts) and any combination of years (2015–2024 multi-select)
-  - **Step 2 — Actors:** Queries `GET /api/onesided` and lists every perpetrator found in the UCDP One-Sided Violence dataset for that country/year range — actor name, UCDP `actor_id`, total civilian deaths, uncertainty range, and years active
-  - **Step 3 — Profile:** Click any actor to cross-reference against `GET /api/gedevents` (`TypeOfViolence=3`) and generate a full accountability profile:
-    - Summary stats: GED event count, total deaths, civilian deaths, verified source organisations
-    - Per-year deaths bar chart (Recharts)
-    - Paginated evidence table: date, location (ADM1/ADM2), best/low/high estimates, civilian deaths, source office, and clickable `source_article` links — all fields required for CTI advisories, sanctions screening, and ICC referral documentation
+- Per-conflict child death estimates with horizontal bar chart scaled to the highest-casualty conflict
+- Child daily rate used to interpolate forward from the verified baseline figure
 
-- **Live News Ticker**
-  - 60+ articles from 12+ geopolitical news sources
-  - Auto-scrolling marquee with clickable links
-  - RSS feeds from Foreign Affairs, Foreign Policy, FT, The Economist, and more
+### Conflict Grid
 
-- **Media Attention & Escalation Signals (GDELT DOC 2.0)**
-  - **MediaAttentionChart** on the Counter page: 30-day timeline per conflict of daily article volume (area) and average sentiment/tone (line, –10 negative → +10 positive), with a country selector across all 11 tracked conflicts
-  - **7-day deltas** — volume Δ% and tone Δ vs. the previous 7 days rendered as inline badges, surfacing under-reported or worsening coverage patterns at a glance
-  - **Globe weighting** — the ConflictGlobe scales each of its baseline conflict markers by the last 7 days of GDELT article intensity, so hot coverage flares up and quiet fronts recede; falls back to the static markers when GDELT is unavailable
-  - **ConflictTable escalation badge** — every conflict row shows an *Escalating / De-escalating / Steady* chip driven by GDELT volume Δ and tone Δ, with a hover tooltip revealing the raw deltas
-  - **Strict source separation** — GDELT is a *media-signal* source only. It is stored in an in-memory `_gdelt_cache`, never in the `conflicts` or `chart_conflicts` collections, and never appears in the casualty pie chart or Deaths-by-Country bar chart
+- One card per tracked conflict: flag, region, estimated total deaths, progress bar relative to highest-toll conflict, daily rate, start date, methodology note, and source link
+- Sorted by death toll descending
 
-- **Hourly Live Data Refresh**
-  - Casualty figures pulled from primary sources every hour via APScheduler
-  - Three datasets produced each cycle:
-    - **All conflicts** (ACLED → UCDP priority) — stat cards and detail table
-    - **Chart conflicts** (UCDP + OHCHR/OCHA only) — Casualty Breakdown and Deaths by Country charts
-    - **Treemap data** — full UCDP battledeaths dataset aggregated by conflict, cached for the Human Cost page
-  - Civilian/military/children figures scaled proportionally from live totals
-  - Manual refresh available on demand via the header button
+### Source Transparency
 
-- **Visible Update Timestamps & Source Attribution**
-  - Header shows "Sources updated" date+time (UTC), active source names, and countdown to next fetch
-  - Amber "Data may be stale" badge appears when the last fetch is >2 hours old
-  - Each chart shows a timestamp plus source pills (`UCDP` · `OHCHR/OCHA`) directly below the title
-  - Every conflict row in the detail table lists its individual data sources
+- Header shows "Sources updated" timestamp (UTC), active data source names, and a live countdown to the next hourly fetch
+- Amber "Data may be stale" badge when last fetch is >2 hours old
+- Every conflict card links directly to its primary source
+
+### Hourly Live Data Refresh
+
+- Casualty figures pulled from primary sources every hour via APScheduler
+- API figures override hardcoded baselines only when the API value is higher — prevents regression when methodologies differ (e.g. Sudan: API 70 k vs counter 150 k)
+- Manual refresh available via the header button
 
 ---
 
 ## Tracked Conflicts
 
-| Conflict | Region | Total Deaths | Civilian | Military | Children | Status |
-|----------|--------|--------------|----------|----------|----------|--------|
-| **Syria** | Middle East | 617,000 | 350,000 | 267,000 | 29,500 | Active |
-| **Ethiopia** | Africa | 600,000 | 450,000 | 150,000 | 85,000 | Active |
-| **Yemen** | Middle East | 377,000 | 150,000 | 227,000 | 11,500 | Active |
-| **Ukraine** | Eastern Europe | 185,000 | 12,500 | 172,500 | 580 | Active |
-| **DRC** | Africa | 120,000 | 95,000 | 25,000 | 28,000 | Active |
-| **Gaza/Palestine** | Middle East | 47,000 | 42,000 | 5,000 | 16,500 | Active |
-| **Sudan** | Africa | 15,000 | 13,500 | 1,500 | 4,200 | Active |
-| **Myanmar** | Southeast Asia | 8,500 | 7,200 | 1,300 | 980 | Active |
-| **Iran** | Middle East | 2,800 | 2,100 | 700 | 320 | Active |
+| Conflict | Region | Status |
+|----------|--------|--------|
+| Ukraine–Russia War | Europe | Active |
+| Sudan Civil War | Africa | Active |
+| Gaza — Palestine | Middle East | Active |
+| Myanmar Civil War | Asia | Active |
+| Nigeria — Multi-Conflict | Africa | Active |
+| Syria | Middle East | Active |
+| Somalia — al-Shabaab | Africa | Active |
+| Haiti — Gang Violence | Americas | Active |
+| Ethiopia (Tigray & Amhara) | Africa | Active |
+| Mexico — Cartel Wars | Americas | Active |
+| Lebanon — Israel War | Middle East | Active |
+| Iran War (US–Israel) | Middle East | Active |
+| Twelve-Day War (Iran–Israel) | Middle East | Ended |
+| Iran — Protest Crackdown | Middle East | Ended |
 
-*Figures above are baseline values; live totals are updated every hour from primary sources.*
+*Baselines anchored April 1, 2026. Live totals interpolated forward using per-conflict daily death rates.*
 
 ---
 
 ## Data Sources
-
-All casualty statistics are sourced from verified international organizations and monitoring groups.
 
 ### Primary Live Sources (queried every hour)
 
@@ -120,37 +93,28 @@ All casualty statistics are sourced from verified international organizations an
 | **OHCHR** — UN Office of the High Commissioner for Human Rights | Ukraine civilian casualties (scraped) | None |
 | **OCHA oPt** — UN Office for Coordination of Humanitarian Affairs | Gaza total deaths (scraped) | None |
 | **ACLED** — Armed Conflict Location & Event Data | All conflicts (optional upgrade) | `ACLED_EMAIL` + `ACLED_KEY` env vars |
-| **GDELT DOC 2.0** — Global Database of Events, Language and Tone | Per-conflict media volume + sentiment (30-day timelines, 7-day deltas) | None (public API) |
-| **Hengaw / Iran Human Rights (IHR)** | Iran total deaths and executions (scraped) | None |
+| **GDELT DOC 2.0** — Global Database of Events, Language and Tone | Breaking conflict headlines | None (public API) |
 
-When ACLED credentials are configured, ACLED takes priority over UCDP for the full conflict dataset (table and stat cards). The **Casualty Breakdown** and **Deaths by Country** charts always use UCDP + OHCHR/OCHA exclusively.
+When ACLED credentials are configured, ACLED takes priority over UCDP for the full conflict dataset. The API figure overrides the hardcoded baseline only when it is higher than the projected hardcoded estimate at the snapshot date.
 
-**GDELT is a media-signal source, not a casualty source.** It powers the MediaAttentionChart, ConflictGlobe marker weighting, and ConflictTable escalation badge only. It is never written into the `conflicts` or `chart_conflicts` collections and never contributes to the casualty totals or charts.
+If all live sources fail, hardcoded baseline figures (derived from the above sources at a fixed point in time) are used as a fallback.
 
-If all live sources fail, hardcoded baseline figures (themselves derived from the above sources at a fixed point in time) are used as a fallback.
+### Baseline Attribution (per-conflict)
 
-### Regional Sources (baseline attribution)
-- Syrian Observatory for Human Rights, VDC, SNHR
-- Gaza Health Ministry, B'Tselem, PCHR
-- Yemen Data Project, Kivu Security Tracker
-- Iran Human Rights (IHR), Hengaw
-- AAPP (Myanmar), TGHAT (Ethiopia)
-- Ghent University, Amnesty International, Congo Research Group
-
-### News Sources (12+ RSS Feeds)
-- The Cipher Brief, War on the Rocks
-- Foreign Affairs, Foreign Policy
-- Financial Times, The Economist
-- Chatham House, Gefira
-- Geopolitical Economy Report, Geopolitical Monitor
-- CFR
+- UNICEF, Save the Children, AAPP (children figures)
+- Lebanese Health Ministry, WHO EMRO, UNIFIL (Lebanon)
+- Gaza Health Ministry, WHO (Gaza)
+- HRANA, Iran Human Rights (Iran)
+- INEGI, ACLED (Mexico)
+- BINUH, ACLED (Haiti)
+- PMC/NIH Tigray Study, HRW (Ethiopia)
 
 ---
 
 ## Tech Stack
 
 ### Backend
-- **FastAPI** — Modern Python web framework
+- **FastAPI** — Python web framework
 - **Motor** — Async MongoDB driver
 - **MongoDB** — Document database for conflict/news data
 - **APScheduler** — Hourly background data refresh
@@ -160,19 +124,16 @@ If all live sources fail, hardcoded baseline figures (themselves derived from th
 
 ### Frontend
 - **React 19** — UI library
-- **React Router** — Navigation
 - **Tailwind CSS** — Utility-first styling
-- **Recharts** — Data visualization (pie, bar, and composed volume/tone charts)
-- **React Fast Marquee** — News ticker
+- **React Fast Marquee** — GDELT alert ticker
 - **Lucide React** — Icon system
 - **Axios** — HTTP client
-- **Cobe** — Tiny WebGL spinning globe
 
 ### Design System
 - **Typography:** Barlow Condensed (headings), Manrope (body), JetBrains Mono (data)
 - **Theme:** Dark mode tactical/situation room aesthetic
-- **Color Palette:** Red (#dc2626) primary, zinc grays
-- **Layout:** Bento grid, sharp edges, corner accents
+- **Color Palette:** Red (`#dc2626`) primary, zinc grays
+- **Layout:** Sharp edges, no rounded corners, maximum data density
 
 ---
 
@@ -210,13 +171,20 @@ yarn install
 echo "REACT_APP_BACKEND_URL=http://localhost:8001" > .env
 ```
 
-**3. Run as background daemons** (survives SSH disconnection)
+**3. Run**
 ```bash
-# from the repo root
-./start.sh      # start backend + frontend in the background
+# Background daemons (from repo root)
+./start.sh      # start backend + frontend
 ./stop.sh       # stop both
 
-# live logs
+# Or manually
+cd backend && source venv/bin/activate
+export OPENSSL_CONF="$(pwd)/openssl_atlas.cnf"
+python -m uvicorn server:app --reload --host 0.0.0.0 --port 8001
+
+cd frontend && yarn start
+
+# Logs
 tail -f logs/backend.log
 tail -f logs/frontend.log
 ```
@@ -230,7 +198,7 @@ tail -f logs/frontend.log
 ## API Documentation
 
 ### `GET /api/conflicts`
-All conflict records (ACLED → UCDP priority). Used by the detail table and stat cards.
+All conflict records (ACLED → UCDP priority). Used to override hardcoded baselines when the API figure is higher.
 
 ```json
 [
@@ -242,125 +210,10 @@ All conflict records (ACLED → UCDP priority). Used by the detail table and sta
     "civilian_deaths": 12500,
     "military_deaths": 172500,
     "children_deaths": 580,
-    "description": "...",
-    "countries_involved": ["Ukraine", "Russia"],
-    "parties_involved": ["Ukrainian Armed Forces", "Russian Armed Forces"],
     "data_sources": ["UCDP GED", "OHCHR", "UN OCHA"],
     "status": "active"
   }
 ]
-```
-
-### `GET /api/chart-conflicts`
-Conflict records built from **UCDP + OHCHR/OCHA only** (no ACLED). Used by the Deaths by Country chart.
-
-### `GET /api/stats`
-Aggregated casualty statistics from the full conflict dataset.
-
-```json
-{
-  "total_deaths": 1972300,
-  "civilian_deaths": 1122300,
-  "military_deaths": 850000,
-  "children_deaths": 176580,
-  "active_conflicts": 9,
-  "total_conflicts": 9,
-  "last_fetch_at": "2026-03-18T14:00:00+00:00",
-  "sources": ["UCDP", "OHCHR/OCHA"]
-}
-```
-
-### `GET /api/chart-stats`
-Aggregated statistics from the UCDP + OHCHR/OCHA dataset only. Used by the Casualty Breakdown chart.
-
-### `GET /api/treemap`
-Full UCDP battledeaths dataset (1946–present) aggregated by conflict for the Human Cost treemap. Served from an in-memory cache that is refreshed hourly; first request triggers a live fetch if the cache is cold.
-
-```json
-{
-  "regions": [
-    {
-      "name": "Africa",
-      "total_deaths": 3500000,
-      "last_year": 2023,
-      "conflicts": [
-        {
-          "conflict_id": 336,
-          "name": "Ethiopia (OAU)",
-          "location": "Ethiopia",
-          "region": "Africa",
-          "total_deaths": 1500000,
-          "last_year": 2022
-        }
-      ]
-    }
-  ],
-  "total_conflicts": 245,
-  "total_deaths": 8500000,
-  "year_range": [1946, 2023],
-  "fetched_at": "2026-03-23T10:00:00+00:00"
-}
-```
-
-Regions are sorted by `total_deaths` descending; conflicts within each region are likewise sorted. `last_year` is the most recent year in which `bd_best > 0` for that conflict or region, and drives the cool→warm colour scale on the treemap.
-
-### `GET /api/onesided?gwno=&years=`
-Queries the **UCDP One-Sided Violence dataset** for a country and multi-year range. Returns actors who perpetrate systematic violence against civilians, aggregated across all requested years.
-
-| Parameter | Description |
-|-----------|-------------|
-| `gwno` | Gleditsch-Ward code(s), comma-separated (e.g. `369` for Ukraine, `678,679` for Yemen) |
-| `years` | Comma-separated year integers, e.g. `2020,2021,2022` |
-
-```json
-{
-  "total_actors": 3,
-  "actors": [
-    {
-      "actor_id": "1234",
-      "actor_name": "Russian Armed Forces",
-      "years_active": [2022, 2023],
-      "total_deaths": 8200,
-      "deaths_low": 6100,
-      "deaths_high": 10400,
-      "per_year": { "2022": 5300, "2023": 2900 }
-    }
-  ]
-}
-```
-
-### `GET /api/gedevents?actor=&gwno=&years=`
-Cross-references an actor (identified from `/api/onesided`) against the **UCDP Georeferenced Event Dataset** filtered to `TypeOfViolence=3` (one-sided violence). Returns up to 1 000 event records sorted newest-first, deduplicated by event ID, with full source traceability for CTI advisories and compliance reporting.
-
-| Parameter | Description |
-|-----------|-------------|
-| `actor` | Actor name string (`side_a` from the onesided dataset) |
-| `gwno` | Optional GW code(s) to narrow by country |
-| `years` | Optional comma-separated years |
-
-```json
-{
-  "total_events": 47,
-  "total_deaths": 1830,
-  "civilian_deaths": 1830,
-  "source_offices": ["OHCHR", "UN News", "Reuters"],
-  "events": [
-    {
-      "id": "12345",
-      "date_start": "2023-04-12",
-      "date_end": "2023-04-12",
-      "adm_1": "Kharkivska",
-      "adm_2": "Kharkiv",
-      "best": 12,
-      "low": 9,
-      "high": 15,
-      "deaths_civilians": 12,
-      "source_office": "OHCHR",
-      "source_article": "https://...",
-      "source_headline": "UN verifies 12 civilian deaths in Kharkiv strike"
-    }
-  ]
-}
 ```
 
 ### `GET /api/last-update`
@@ -375,60 +228,11 @@ Metadata about the most recent data fetch.
 }
 ```
 
-`sources` reflects all sources used for the full dataset; `chart_sources` reflects only the UCDP + OHCHR/OCHA subset shown on charts.
-
 ### `GET /api/news`
-Aggregated news articles from RSS feeds.
-
-### `GET /api/gdelt-timeline?country=`
-Per-conflict 30-day GDELT DOC 2.0 timeline of daily article volume and average tone. Powers the MediaAttentionChart on the Counter page. Served from the in-memory `_gdelt_cache`; a cache miss triggers an inline live fetch.
-
-| Parameter | Description |
-|-----------|-------------|
-| `country` | Optional country name (e.g. `Ukraine`, `Gaza/Palestine`, `Sudan`). If omitted, returns a dict of all tracked countries. |
-
-```json
-{
-  "country": "Ukraine",
-  "source": "GDELT DOC 2.0",
-  "fetched_at": "2026-07-03T10:00:00+00:00",
-  "dates":  ["2026-06-04", "2026-06-05", "..."],
-  "volume": [0.0142, 0.0158, 0.0113],
-  "tone":   [-3.42, -3.61, -2.90],
-  "latest_volume":    0.0113,
-  "avg_volume_7d":    0.0131,
-  "avg_tone_7d":      -3.15,
-  "volume_delta_pct": 12.4,
-  "tone_delta":       -0.28,
-  "centroid":         [49.0, 31.0]
-}
-```
-
-`volume_delta_pct` and `tone_delta` compare the last 7 days against the prior 7 days and drive the escalation badge in the ConflictTable.
-
-### `GET /api/live-events`
-Per-conflict media-density markers for the ConflictGlobe overlay. Returns a lightweight list of `{country, lat, lon, intensity, avg_tone_7d, volume_delta_pct, tone_delta}` where `intensity` is a 0..1 normalised value derived from GDELT 7-day average article volume.
-
-```json
-{
-  "source": "GDELT DOC 2.0",
-  "fetched_at": "2026-07-03T10:00:00+00:00",
-  "markers": [
-    {
-      "country": "Ukraine",
-      "lat": 49.0,
-      "lon": 31.0,
-      "intensity": 0.874,
-      "avg_tone_7d": -3.15,
-      "volume_delta_pct": 12.4,
-      "tone_delta": -0.28
-    }
-  ]
-}
-```
+Aggregated news articles from RSS feeds (~60 articles, 12+ sources).
 
 ### `POST /api/refresh`
-Immediately triggers a full data refresh from all primary sources (including GDELT).
+Immediately triggers a full data refresh from all primary sources.
 
 ---
 
@@ -438,85 +242,34 @@ Immediately triggers a full data refresh from all primary sources (including GDE
 Startup → Initial fetch from primary sources
     ↓
 Every hour (APScheduler):
-    ├─ Query UCDP GED API (gedevents endpoint, x-ucdp-access-token header)
-    │     └─ Total deaths per country (paginated)
+    ├─ Query UCDP GED API (x-ucdp-access-token header)
     ├─ Query ACLED API (if ACLED_EMAIL + ACLED_KEY are set)
-    │     └─ Total fatalities per country
     ├─ Scrape OHCHR (Ukraine civilian death count)
     ├─ Scrape OCHA oPt (Gaza total death count)
-    ├─ Fetch RSS feeds (12 sources, ~60 articles)
-    ├─ Build two conflict datasets:
-    │     ├─ conflicts       → ACLED > UCDP priority (table + stat cards)
-    │     └─ chart_conflicts → UCDP + OHCHR/OCHA only (charts)
-    ├─ Proportionally scale civilian/military/children from live totals
-    ├─ Persist both datasets to MongoDB
-    ├─ Store fetch timestamp, sources, chart_sources in system_metadata
-    ├─ Rebuild treemap cache (UCDP battledeaths, all conflicts 1946–present)
-    └─ Refresh GDELT DOC 2.0 volume + tone timelines per conflict
-          → stored in-memory in _gdelt_cache (never in Mongo casualty collections)
+    ├─ Fetch RSS feeds (12+ sources, ~60 articles)
+    ├─ Build conflict dataset (ACLED > UCDP priority)
+    ├─ Persist to MongoDB
+    └─ Store fetch timestamp + sources in system_metadata
 
-Frontend polls every 5 min (Dashboard):
-    ├─ GET /api/conflicts       → detail table (+ /api/live-events for escalation badges)
-    ├─ GET /api/chart-conflicts → Deaths by Country chart
-    ├─ GET /api/stats           → stat cards
-    ├─ GET /api/chart-stats     → Casualty Breakdown chart
-    ├─ GET /api/news            → news ticker
-    ├─ GET /api/live-events     → ConflictGlobe marker weighting
-    └─ GET /api/last-update     → header timestamps + source pills
+Counter page (/) — on mount + every 60s check:
+    ├─ GET /api/conflicts    → baseline override (API wins only if higher)
+    └─ GET /api/last-update  → "sources updated" timestamp
 
-Counter page (/counter) — on mount + hourly refresh:
-    ├─ GET /api/conflicts       → live baseline overrides
-    ├─ GET /api/last-update     → "sources updated" timestamp
-    └─ GET /api/gdelt-timeline?country=<selected>
-          → MediaAttentionChart: 30-day volume area + tone line + 7d deltas
-
-Human Cost Treemap (/human-cost) — on page load:
-    └─ GET /api/treemap
-          └─ UCDP battledeaths/25.1 (paginated, all years)
-               → aggregated by conflict_id (sum bd_best, max year, region)
-               → grouped into 5 UCDP geographic regions
-               → returned as sorted region + conflict tree
-
-Actor Accountability Tracker (/actor-tracker) — on demand:
-    ├─ GET /api/onesided?gwno=&years=
-    │     └─ UCDP One-Sided Violence dataset → actor list
-    └─ GET /api/gedevents?actor=&gwno=&years=
-          └─ UCDP GED (TypeOfViolence=3) → event-level evidence table
+  Between fetches: per-conflict daily rates tick the counter forward
+  every second via requestAnimationFrame / setInterval.
 ```
 
 ---
 
 ## Design Philosophy
 
-WatchTower follows a **situation room aesthetic** inspired by military command centers and intelligence briefing rooms:
+WatchTower follows a **situation room aesthetic** inspired by military command centers:
 
 - **Dark Mode First** — Reduces eye strain for extended monitoring sessions
 - **Data Density** — Maximum information in minimal space
 - **Sharp Edges** — No rounded corners; tactical and precise
 - **Monospace Typography** — Clear, unambiguous data display
 - **Red Accent** — Urgency and attention to critical information
-- **Blinking LIVE Indicators** — Real-time status awareness
-
----
-
-## Contributing
-
-Contributions are welcome. Areas for improvement:
-
-**High Priority**
-- [x] Historical trend charts (GDELT DOC 2.0 30-day volume + tone timeline)
-- [x] World map / globe visualization
-- [x] Casualty heatmap (conflicts × categories)
-- [x] Actor accountability tracker (UCDP One-Sided Violence + GED cross-reference)
-- [x] Human Cost treemap — all UCDP conflicts 1946–present, proportional by cumulative deaths
-- [x] Media attention & escalation signals (GDELT DOC 2.0)
-- [ ] Conflict timeline view (event-level GDELT geocoded overlay)
-
-**Medium Priority**
-- [ ] Export functionality (PDF/CSV) — especially useful for Actor Tracker compliance reports
-- [ ] Advanced filtering (region, date, severity)
-- [ ] Data source confidence indicators
-- [ ] Multi-language support
 
 ---
 
