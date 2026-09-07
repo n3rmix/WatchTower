@@ -6,6 +6,7 @@ import os
 import json
 import logging
 import re
+import ssl
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional, Dict
@@ -25,6 +26,12 @@ import certifi
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
+
+# SSL context for web scraping. Built explicitly so that the OPENSSL_CONF env
+# var (set for MongoDB Atlas TLS compatibility) does not interfere with
+# outbound HTTPS requests to OHCHR, OCHA, etc.
+_SCRAPE_SSL = ssl.create_default_context(cafile=certifi.where())
+_SCRAPE_SSL.minimum_version = ssl.TLSVersion.TLSv1_2
 
 # MongoDB connection (Atlas — TLS verified against certifi CA bundle)
 mongo_url = os.environ['MONGO_URL']
@@ -341,7 +348,11 @@ async def scrape_ohchr_ukraine_civilian_deaths() -> Optional[int]:
         "https://ukraine.un.org/en/sdgs",
     ]
     try:
-        async with aiohttp.ClientSession(headers={"User-Agent": "Mozilla/5.0 (compatible; WatchTower/1.0)"}) as session:
+        connector = aiohttp.TCPConnector(ssl=_SCRAPE_SSL)
+        async with aiohttp.ClientSession(
+            headers={"User-Agent": "Mozilla/5.0 (compatible; WatchTower/1.0)"},
+            connector=connector,
+        ) as session:
             for url in urls_to_try:
                 try:
                     async with session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
@@ -378,7 +389,11 @@ async def scrape_ocha_gaza_deaths() -> Optional[int]:
         "https://www.ochaopt.org/",
     ]
     try:
-        async with aiohttp.ClientSession(headers={"User-Agent": "Mozilla/5.0 (compatible; WatchTower/1.0)"}) as session:
+        connector = aiohttp.TCPConnector(ssl=_SCRAPE_SSL)
+        async with aiohttp.ClientSession(
+            headers={"User-Agent": "Mozilla/5.0 (compatible; WatchTower/1.0)"},
+            connector=connector,
+        ) as session:
             for url in urls_to_try:
                 try:
                     async with session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
@@ -425,7 +440,11 @@ async def scrape_hengaw_iran_deaths() -> Optional[int]:
         r'total(?:.*?)(\d[\d,]+)(?:\s+killed|\s+dead)',
     ]
     try:
-        async with aiohttp.ClientSession(headers={"User-Agent": "Mozilla/5.0 (compatible; WatchTower/1.0)"}) as session:
+        connector = aiohttp.TCPConnector(ssl=_SCRAPE_SSL)
+        async with aiohttp.ClientSession(
+            headers={"User-Agent": "Mozilla/5.0 (compatible; WatchTower/1.0)"},
+            connector=connector,
+        ) as session:
             for url in urls_to_try:
                 try:
                     async with session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
@@ -464,7 +483,11 @@ async def scrape_ihr_iran_deaths() -> Optional[int]:
         r'executed\s+(?:at\s+least\s+)?(\d[\d,]+)',
     ]
     try:
-        async with aiohttp.ClientSession(headers={"User-Agent": "Mozilla/5.0 (compatible; WatchTower/1.0)"}) as session:
+        connector = aiohttp.TCPConnector(ssl=_SCRAPE_SSL)
+        async with aiohttp.ClientSession(
+            headers={"User-Agent": "Mozilla/5.0 (compatible; WatchTower/1.0)"},
+            connector=connector,
+        ) as session:
             for url in urls_to_try:
                 try:
                     async with session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
@@ -1302,26 +1325,20 @@ async def fetch_treemap_data() -> Dict:
 # ─── Background refresh task ──────────────────────────────────────────────────
 
 async def refresh_all_data():
-    """Refresh news, conflict casualty data, treemap, and GDELT signals from primary sources."""
+    """Refresh news, conflict casualty data, and GDELT alerts from primary sources."""
     logger.info("Starting hourly data refresh…")
     try:
         await fetch_rss_feeds()
         await scrape_conflict_data()
-        await fetch_treemap_data()
         logger.info("Hourly data refresh completed successfully")
     except Exception as e:
         logger.error(f"Error during data refresh: {e}")
 
-    # GDELT is handled by the dedicated 15-minute fetch_gdelt_csv_tick() scheduler
-    # job, which also rebuilds _gdelt_cache after each tick.  The hourly refresh
-    # does not need to call it — alerts are now sourced from news_articles (RSS).
+    # GDELT alerts are sourced from the RSS news_articles collection.
     try:
         await fetch_gdelt_alerts()
     except Exception as exc:
         logger.warning(f"GDELT alerts refresh failed (non-fatal): {exc}")
-
-    # Pre-warm actor-network cache in background so the first user request is instant.
-    asyncio.create_task(_build_actor_network_cache())
 
 
 # ─── API Routes ───────────────────────────────────────────────────────────────
@@ -3163,7 +3180,7 @@ async def fetch_gdelt_csv_tick() -> None:
                         gkg_data = await resp.read()
                         logger.info(f"GDELT GKG CSV {file_ts} downloaded: {len(gkg_data) / 1024:.0f} KB")
                     else:
-                        logger.warning(f"GDELT GKG CSV {file_ts} HTTP {resp.status}")
+                        logger.debug(f"GDELT GKG CSV {file_ts} HTTP {resp.status} (file not yet published)")
             except Exception as exc:
                 logger.warning(f"GDELT GKG CSV {file_ts} download failed: {exc}")
         elif not gkg_url:
