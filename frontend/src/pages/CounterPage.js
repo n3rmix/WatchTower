@@ -479,6 +479,13 @@ export default function CounterPage() {
                 ))}
               </div>
             </section>
+          ) : status === 'offline' ? (
+            <div className="flex items-center justify-center py-20">
+              <div className="text-center space-y-2">
+                <p className="text-red-500 font-mono text-xs uppercase tracking-widest">Backend offline</p>
+                <p className="text-zinc-600 font-mono text-[10px]">Could not reach {BACKEND_URL} — start the backend and refresh.</p>
+              </div>
+            </div>
           ) : (
             <div className="flex items-center justify-center py-20">
               <div className="flex items-center gap-3 text-zinc-600 font-mono text-xs">

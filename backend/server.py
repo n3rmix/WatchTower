@@ -1430,7 +1430,7 @@ async def get_counter_conflicts():
 
             # Project the static base forward to fetched_at to compare fairly
             static_snap = datetime.fromisoformat(STATIC_SNAP.replace("Z", "+00:00"))
-            fetch_dt = datetime.fromisoformat(fetched_at)
+            fetch_dt = datetime.fromisoformat(fetched_at.replace("Z", "+00:00"))
             days_since = max(0, (fetch_dt - static_snap).total_seconds() / 86400)
             projected = conf["base_cumulative"] + int(days_since * conf["daily_rate"])
 
