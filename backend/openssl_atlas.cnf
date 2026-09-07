@@ -6,9 +6,11 @@ ssl_conf = ssl_sect
 [ssl_sect]
 system_default = system_default_sect
 
-# Python 3.14 / OpenSSL 3.4+ enables the post-quantum X25519MLKEM768 key-share
-# by default. MongoDB Atlas rejects it with TLSV1_ALERT_INTERNAL_ERROR.
-# Restrict the offered groups to the classical set that Atlas understands.
+# Python 3.14 / OpenSSL 3.4+ TLS 1.3 handshake extensions trigger
+# TLSV1_ALERT_INTERNAL_ERROR against MongoDB Atlas. Cap the protocol at
+# TLS 1.2 and drop SECLEVEL to 1 to negotiate against Atlas's TLS stack.
 [system_default_sect]
+MinProtocol = TLSv1.2
+MaxProtocol = TLSv1.2
 Groups = x25519:secp256r1:secp384r1
 CipherString = DEFAULT@SECLEVEL=1

@@ -1,5 +1,4 @@
-import { Globe, RefreshCw, Database, AlertTriangle, Map, Network, Activity, Hash } from "lucide-react";
-import { NavLink } from "react-router-dom";
+import { Globe, RefreshCw, Database, AlertTriangle } from "lucide-react";
 import { Button } from "./ui/button";
 import React, { useState, useEffect } from "react";
 import axios from "axios";
@@ -115,62 +114,6 @@ const Header = ({ dataLastFetch, sourcesUsed = [], nextFetchIn, onRefresh }) => 
             </div>
           </div>
 
-          {/* Centre: page navigation */}
-          <nav className="hidden md:flex items-center gap-1">
-            <NavLink
-              to="/"
-              end
-              className={({ isActive }) =>
-                `flex items-center gap-1.5 px-3 py-1 rounded-sm text-xs font-mono uppercase tracking-wider transition-colors border ${
-                  isActive
-                    ? "bg-zinc-800 border-zinc-700 text-white"
-                    : "border-transparent text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900"
-                }`
-              }
-            >
-              <Hash className="w-3.5 h-3.5" />
-              Counter
-            </NavLink>
-            <NavLink
-              to="/human-cost"
-              className={({ isActive }) =>
-                `flex items-center gap-1.5 px-3 py-1 rounded-sm text-xs font-mono uppercase tracking-wider transition-colors border ${
-                  isActive
-                    ? "bg-zinc-800 border-zinc-700 text-white"
-                    : "border-transparent text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900"
-                }`
-              }
-            >
-              <Map className="w-3.5 h-3.5" />
-              Human Cost
-            </NavLink>
-            <NavLink
-              to="/actor-network"
-              className={({ isActive }) =>
-                `flex items-center gap-1.5 px-3 py-1 rounded-sm text-xs font-mono uppercase tracking-wider transition-colors border ${
-                  isActive
-                    ? "bg-zinc-800 border-zinc-700 text-white"
-                    : "border-transparent text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900"
-                }`
-              }
-            >
-              <Network className="w-3.5 h-3.5" />
-              Actor Network
-            </NavLink>
-            <NavLink
-              to="/life-trajectory"
-              className={({ isActive }) =>
-                `flex items-center gap-1.5 px-3 py-1 rounded-sm text-xs font-mono uppercase tracking-wider transition-colors border ${
-                  isActive
-                    ? "bg-zinc-800 border-zinc-700 text-white"
-                    : "border-transparent text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900"
-                }`
-              }
-            >
-              <Activity className="w-3.5 h-3.5" />
-              Lifelines
-            </NavLink>
-          </nav>
 
           {/* Right: timestamps + buttons */}
           <div className="flex items-center gap-3">

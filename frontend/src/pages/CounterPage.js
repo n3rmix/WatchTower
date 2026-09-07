@@ -1,10 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import axios from 'axios';
 import Header from '../components/Header';
-import MediaAttentionChart from '../components/MediaAttentionChart';
-import ForgottenCrisesPanel from '../components/ForgottenCrisesPanel';
-import HumanitarianThemeRadar from '../components/HumanitarianThemeRadar';
-import DiplomaticPulsePanel from '../components/DiplomaticPulsePanel';
 import GdeltAlertTicker from '../components/GdeltAlertTicker';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -708,20 +704,8 @@ export default function CounterPage() {
             </div>
           )}
 
-          {/* ── Media attention & tone (GDELT) ── */}
-          <MediaAttentionChart />
-
           {/* ── GDELT alert ticker ── */}
           <GdeltAlertTicker />
-
-          {/* ── Forgotten Crises (attention-gap ranking) ── */}
-          <ForgottenCrisesPanel />
-
-          {/* ── Humanitarian Theme Radar ── */}
-          <HumanitarianThemeRadar />
-
-          {/* ── Diplomatic Pulse Panel ── */}
-          <DiplomaticPulsePanel />
 
           {/* ── Children section ── */}
           {data && (

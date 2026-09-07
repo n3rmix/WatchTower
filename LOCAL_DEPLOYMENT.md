@@ -22,7 +22,7 @@ Complete guide to running WatchTower on your local machine.
    - Download from [python.org](https://www.python.org/)
    - Verify: `python3 --version`
 
-4. **MongoDB** — see setup options below
+4. **MongoDB Atlas account** — free tier at [mongodb.com/cloud/atlas](https://www.mongodb.com/cloud/atlas/register)
 
 ### API Keys
 
@@ -33,57 +33,19 @@ Complete guide to running WatchTower on your local machine.
 
 ---
 
-## Database Setup (MongoDB)
+## Database Setup (MongoDB Atlas)
 
-### Option 1: Local MongoDB (recommended for development)
-
-#### macOS (Homebrew)
-
-```bash
-brew tap mongodb/brew
-brew install mongodb-community@7.0
-brew services start mongodb-community@7.0
-mongosh --eval "db.version()"   # verify
-```
-
-#### Ubuntu / Debian
-
-```bash
-wget -qO - https://www.mongodb.org/static/pgp/server-7.0.asc | sudo apt-key add -
-echo "deb [ arch=amd64,arm64 ] https://repo.mongodb.org/apt/ubuntu $(lsb_release -cs)/mongodb-org/7.0 multiverse" \
-  | sudo tee /etc/apt/sources.list.d/mongodb-org-7.0.list
-sudo apt-get update && sudo apt-get install -y mongodb-org
-sudo systemctl start mongod && sudo systemctl enable mongod
-mongosh --eval "db.version()"   # verify
-```
-
-#### Windows
-
-1. Download the MongoDB Community Server installer from [mongodb.com](https://www.mongodb.com/try/download/community)
-2. Run the installer — choose "Complete" and install as a Windows Service
-3. Verify in PowerShell: `mongosh --eval "db.version()"`
-
-#### Docker (cross-platform)
-
-```bash
-docker run -d \
-  --name mongodb \
-  -p 27017:27017 \
-  -v mongodb_data:/data/db \
-  mongo:7.0
-
-# verify
-docker exec -it mongodb mongosh
-```
-
-### Option 2: MongoDB Atlas (cloud, free tier)
+WatchTower uses MongoDB Atlas (cloud). No local MongoDB installation is required.
 
 1. Create a free account at [MongoDB Atlas](https://www.mongodb.com/cloud/atlas/register)
 2. Create an M0 (free) cluster
-3. Click **Connect → Connect your application** and copy the connection string:
+3. Under **Security → Network Access**, add your IP address (or `0.0.0.0/0` for development)
+4. Under **Security → Database Access**, create a database user with read/write privileges
+5. Click **Connect → Drivers** and copy the connection string:
    ```
-   mongodb+srv://username:password@cluster0.xxxxx.mongodb.net/?retryWrites=true&w=majority
+   mongodb+srv://<username>:<password>@cluster0.xxxxx.mongodb.net/?retryWrites=true&w=majority&appName=WatchTower
    ```
+6. Replace `<username>` and `<password>` with your Atlas credentials
 
 ---
 
@@ -111,8 +73,8 @@ pip install -r requirements.txt
 
 # Create .env
 cat > .env << 'EOF'
-# MongoDB
-MONGO_URL=mongodb://localhost:27017
+# MongoDB Atlas connection string
+MONGO_URL=mongodb+srv://<username>:<password>@cluster0.xxxxx.mongodb.net/?retryWrites=true&w=majority&appName=WatchTower
 DB_NAME=conflict_tracker
 
 # CORS (allow all origins in development)
@@ -127,7 +89,7 @@ UCDP_API_KEY=your-ucdp-access-token
 EOF
 ```
 
-If using MongoDB Atlas, replace `MONGO_URL` with your Atlas connection string.
+Replace the `MONGO_URL` value with your actual Atlas connection string from the Atlas dashboard.
 
 ### 3. Frontend setup
 
@@ -149,6 +111,8 @@ EOF
 ```bash
 cd backend
 source venv/bin/activate        # macOS/Linux
+# Required for Atlas TLS on Python 3.14+ / OpenSSL 3.4+ (caps TLS to 1.2)
+export OPENSSL_CONF="$(pwd)/openssl_atlas.cnf"
 python -m uvicorn server:app --reload --host 0.0.0.0 --port 8001
 ```
 
@@ -189,9 +153,10 @@ curl http://localhost:8001/api/last-update
 
 ### Check the database
 
+Use MongoDB Compass or `mongosh` with your Atlas connection string:
+
 ```bash
-mongosh
-use conflict_tracker
+mongosh "mongodb+srv://<username>:<password>@cluster0.xxxxx.mongodb.net/conflict_tracker"
 show collections
 # Expected: chart_conflicts, conflicts, news_articles, system_metadata
 db.conflicts.countDocuments()        # → 9
@@ -199,6 +164,8 @@ db.chart_conflicts.countDocuments()  # → 9
 db.news_articles.countDocuments()    # → ~60
 exit
 ```
+
+Or open Atlas in the browser: **Browse Collections → conflict_tracker**.
 
 ### Check the frontend
 
@@ -252,14 +219,13 @@ Open `http://localhost:3000`. You should see:
 ### MongoDB Compass (GUI)
 
 1. Download [MongoDB Compass](https://www.mongodb.com/try/download/compass)
-2. Connect to `mongodb://localhost:27017`
+2. Paste your Atlas connection string and click **Connect**
 3. Browse the `conflict_tracker` database and its collections
 
 ### Reset the database
 
 ```bash
-mongosh
-use conflict_tracker
+mongosh "mongodb+srv://<username>:<password>@cluster0.xxxxx.mongodb.net/conflict_tracker"
 db.dropDatabase()
 exit
 # Restart the backend — it will repopulate on startup
@@ -267,12 +233,14 @@ exit
 
 ### Backup and restore
 
+Use **Atlas → Backup** in the web UI (M0 free tier supports on-demand snapshots), or:
+
 ```bash
 # Backup
-mongodump --db=conflict_tracker --out=/path/to/backup
+mongodump --uri="mongodb+srv://<username>:<password>@cluster0.xxxxx.mongodb.net/conflict_tracker" --out=/path/to/backup
 
 # Restore
-mongorestore --db=conflict_tracker /path/to/backup/conflict_tracker
+mongorestore --uri="mongodb+srv://<username>:<password>@cluster0.xxxxx.mongodb.net" --db=conflict_tracker /path/to/backup/conflict_tracker
 ```
 
 ---
@@ -293,14 +261,11 @@ This immediately re-fetches all live sources (UCDP, OHCHR, OCHA, RSS) and update
 
 ### MongoDB connection error (`ServerSelectionTimeoutError`)
 
-1. Confirm MongoDB is running:
-   ```bash
-   brew services list         # macOS
-   sudo systemctl status mongod  # Linux
-   docker ps                  # Docker
-   ```
-2. Verify `MONGO_URL` in `backend/.env`
-3. Test the connection: `mongosh`
+1. Verify `MONGO_URL` in `backend/.env` is your full Atlas connection string
+2. In the Atlas dashboard, confirm your IP is whitelisted under **Security → Network Access**
+3. Check the Atlas cluster is in the **Active** state (not paused)
+4. Ensure `OPENSSL_CONF` is exported before starting uvicorn (see backend start command above)
+5. Test the connection: `mongosh "your-atlas-uri"`
 
 ### Port already in use
 
@@ -391,14 +356,12 @@ npx serve -s build -p 3000
 ## Quick-Start Summary
 
 ```bash
-# Terminal 1 — MongoDB (if not running as a service)
-mongod --dbpath /path/to/data
-
-# Terminal 2 — Backend
+# Terminal 1 — Backend (OPENSSL_CONF required for Atlas TLS on Python 3.14+ / OpenSSL 3.4+)
 cd backend && source venv/bin/activate
+export OPENSSL_CONF="$(pwd)/openssl_atlas.cnf"
 python -m uvicorn server:app --reload --port 8001
 
-# Terminal 3 — Frontend
+# Terminal 2 — Frontend
 cd frontend && yarn start
 
 # Open

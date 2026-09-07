@@ -91,7 +91,7 @@ WatchTower/
 
 | Component | Details |
 |---|---|
-| Database | MongoDB — 4 collections (see below) |
+| Database | MongoDB Atlas (cloud) — 4 collections (see below) |
 | Backend port | `8001` |
 | Frontend port | `3000` (CRA dev server) |
 | Process management | `start.sh` / `stop.sh` shell scripts; logs in `logs/` |
@@ -281,8 +281,9 @@ All database operations use Motor (async). All external HTTP calls use aiohttp. 
 
 ### Starting the app locally
 ```bash
-# Terminal 1 — Backend
+# Terminal 1 — Backend (OPENSSL_CONF required for Atlas TLS on Python 3.14+ / OpenSSL 3.4+)
 cd backend && source venv/bin/activate
+export OPENSSL_CONF="$(pwd)/openssl_atlas.cnf"
 python -m uvicorn server:app --reload --host 0.0.0.0 --port 8001
 
 # Terminal 2 — Frontend
@@ -308,8 +309,8 @@ curl -X POST http://localhost:8001/api/refresh  # force immediate re-fetch
 
 ### Database inspection
 ```bash
-mongosh
-use conflict_tracker
+# Use your Atlas connection string from backend/.env
+mongosh "mongodb+srv://<username>:<password>@cluster0.xxxxx.mongodb.net/conflict_tracker"
 db.conflicts.countDocuments()        # → 9
 db.chart_conflicts.countDocuments()  # → 9
 db.news_articles.countDocuments()    # → ~60
