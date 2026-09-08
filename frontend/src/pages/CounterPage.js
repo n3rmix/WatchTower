@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import axios from 'axios';
-import createGlobe from 'cobe';
+import { ComposableMap, Geographies, Geography } from 'react-simple-maps';
 import Header from '../components/Header';
 import GdeltAlertTicker from '../components/GdeltAlertTicker';
 
@@ -194,223 +194,142 @@ function ChildrenBreakdown({ conflicts }) {
   );
 }
 
-// ─── BREAKDOWN GLOBE ──────────────────────────────────────────────────────────
+// ─── BREAKDOWN MAP ───────────────────────────────────────────────────────────
 
-const CONFLICT_COORDS = {
-  ukraine:     [49.0,  31.0],
-  russia:      [61.5, 105.3],
-  gaza:        [31.5,  34.5],
-  palestine:   [31.5,  34.5],
-  israel:      [31.5,  34.8],
-  sudan:       [15.5,  32.5],
-  myanmar:     [17.0,  96.0],
-  syria:       [35.0,  38.0],
-  yemen:       [15.5,  48.0],
-  ethiopia:    [ 9.0,  40.0],
-  drc:         [-4.0,  21.5],
-  congo:       [-4.0,  21.5],
-  iran:        [32.0,  53.0],
-  lebanon:     [33.9,  35.5],
-  haiti:       [18.9, -72.3],
-  somalia:     [ 2.0,  45.3],
-  mali:        [17.5,  -4.0],
-  sahel:       [15.0,   0.0],
-  nigeria:     [ 9.0,   8.7],
-  afghanistan: [33.9,  67.7],
-  iraq:        [33.2,  43.7],
-  libya:       [26.3,  17.2],
-  cameroon:    [ 7.4,  12.4],
-  mozambique:  [-18.7, 35.5],
-  somalia:     [  2.0, 45.3],
+const GEO_URL = "https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json";
+
+// ISO 3166-1 numeric ID → conflict name keyword
+// geo.id from world-atlas TopoJSON is the numeric ISO code as a string
+const CONFLICT_GEO_IDS = {
+  4:   'afghanistan',
+  104: 'myanmar',
+  120: 'cameroon',
+  180: ['drc', 'congo'],
+  231: 'ethiopia',
+  275: ['gaza', 'palestine'],
+  332: 'haiti',
+  364: 'iran',
+  368: 'iraq',
+  376: 'israel',
+  422: 'lebanon',
+  434: 'libya',
+  466: 'mali',
+  508: 'mozambique',
+  566: 'nigeria',
+  643: 'russia',
+  706: 'somalia',
+  729: 'sudan',
+  760: 'syria',
+  804: 'ukraine',
+  887: 'yemen',
 };
 
-function getCoords(name) {
-  const lower = name.toLowerCase();
-  for (const [key, coords] of Object.entries(CONFLICT_COORDS)) {
-    if (lower.includes(key)) return coords;
-  }
-  return null;
-}
+function BreakdownMap({ conflicts }) {
+  const [panel, setPanel] = useState(null);
+  const containerRef = useRef(null);
 
-const GLOBE_SIZE  = 380;
-const GLOBE_THETA = 0.28;
-
-/** Project a lat/lon marker to canvas pixel coordinates given current phi. */
-function projectToScreen(lat, lon, phi) {
-  const latR = (lat * Math.PI) / 180;
-  const lonR = (lon * Math.PI) / 180;
-
-  // Spherical → Cartesian
-  const x = Math.cos(latR) * Math.sin(lonR);
-  const y = Math.sin(latR);
-  const z = Math.cos(latR) * Math.cos(lonR);
-
-  // Rotate around Y by phi (horizontal spin)
-  const cosPhi = Math.cos(phi);
-  const sinPhi = Math.sin(phi);
-  const rx  =  x * cosPhi + z * sinPhi;
-  const rz  = -x * sinPhi + z * cosPhi;
-
-  // Rotate around X by theta (tilt)
-  const cosT = Math.cos(GLOBE_THETA);
-  const sinT = Math.sin(GLOBE_THETA);
-  const ry2  = y * cosT - rz * sinT;
-  const rz2  = y * sinT + rz * cosT;
-
-  return {
-    sx:      (rx  + 1) / 2 * GLOBE_SIZE,
-    sy:      (1 - ry2) / 2 * GLOBE_SIZE,
-    visible: rz2 > 0,                   // facing viewer
-  };
-}
-
-function BreakdownGlobe({ conflicts }) {
-  const canvasRef = useRef(null);
-  const globeRef  = useRef(null);
-  const rafRef    = useRef(null);
-  const phiRef    = useRef(0);
-  const frameRef  = useRef(0);
-  const [loaded,  setLoaded]  = useState(false);
-  const [panel,   setPanel]   = useState(null); // { x, y, name, region, deaths, dailyRate, flag }
-
-  // sqrt scaling; carry full summary data for the click panel
-  const markers = useMemo(() => {
-    if (!conflicts.length) return [];
-    const maxDeaths = Math.max(...conflicts.map(c => c.currentDeaths), 1);
-    return conflicts
-      .map(c => {
-        const loc = getCoords(c.name);
-        if (!loc) return null;
-        const ratio = Math.sqrt(c.currentDeaths / maxDeaths);
-        const size  = 0.04 + 0.11 * ratio;
-        return {
-          location:  loc,
-          size,
-          name:      c.name,
-          region:    c.region,
-          deaths:    c.currentDeaths,
-          dailyRate: c.dailyRate,
-          flag:      c.flag,
-        };
-      })
-      .filter(Boolean);
+  // numeric geo ID (as string) → conflict object
+  const conflictByGeoId = useMemo(() => {
+    const result = {};
+    for (const [numId, keywords] of Object.entries(CONFLICT_GEO_IDS)) {
+      const kws = Array.isArray(keywords) ? keywords : [keywords];
+      const conflict = conflicts.find(c =>
+        kws.some(k => c.name.toLowerCase().includes(k))
+      );
+      if (conflict) result[String(numId)] = conflict;
+    }
+    return result;
   }, [conflicts]);
 
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || !markers.length) return;
+  const handleGeoClick = (geo, evt) => {
+    const conflict = conflictByGeoId[String(geo.id)];
+    if (!conflict) { setPanel(null); return; }
 
-    globeRef.current = createGlobe(canvas, {
-      devicePixelRatio: 2,
-      width:         GLOBE_SIZE * 2,
-      height:        GLOBE_SIZE * 2,
-      phi:           0,
-      theta:         GLOBE_THETA,
-      dark:          1,
-      diffuse:       1.1,
-      mapSamples:    16000,
-      mapBrightness: 4,
-      baseColor:   [0.05, 0.05, 0.08],
-      markerColor: [1, 0.18, 0.18],
-      glowColor:   [0.5, 0.05, 0.05],
-      markers,
-    });
-    setLoaded(true);
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return;
 
-    function animate() {
-      frameRef.current += 1;
-      phiRef.current   += 0.002;
-      const pulse = 1 + 0.3 * Math.sin(frameRef.current * 0.05);
-      globeRef.current?.update({
-        phi: phiRef.current,
-        markers: markers.map(m => ({ location: m.location, size: m.size * pulse })),
-      });
-      rafRef.current = requestAnimationFrame(animate);
-    }
-    rafRef.current = requestAnimationFrame(animate);
-
-    return () => {
-      cancelAnimationFrame(rafRef.current);
-      globeRef.current?.destroy();
-    };
-  }, [markers]);
-
-  // Click: hit-test visible markers; toggle panel or dismiss on empty click
-  const handleClick = useCallback((e) => {
-    const canvas = canvasRef.current;
-    if (!canvas || !markers.length) return;
-    const rect = canvas.getBoundingClientRect();
-    const mx = e.clientX - rect.left;
-    const my = e.clientY - rect.top;
-
-    let closest = null;
-    let minDist  = 30; // pixel hit-radius
-
-    for (const m of markers) {
-      const { sx, sy, visible } = projectToScreen(
-        m.location[0], m.location[1], phiRef.current
-      );
-      if (!visible) continue;
-      const dist = Math.hypot(sx - mx, sy - my);
-      if (dist < minDist) { minDist = dist; closest = { sx, sy, ...m }; }
-    }
-
-    if (!closest) { setPanel(null); return; }
-
-    // Toggle off if same marker clicked again
     setPanel(prev =>
-      prev?.name === closest.name
-        ? null
-        : { x: closest.sx, y: closest.sy, name: closest.name, region: closest.region,
-            deaths: closest.deaths, dailyRate: closest.dailyRate, flag: closest.flag }
+      prev?.name === conflict.name ? null : {
+        x:         evt.clientX - rect.left,
+        y:         evt.clientY - rect.top,
+        name:      conflict.name,
+        region:    conflict.region,
+        deaths:    conflict.currentDeaths,
+        dailyRate: conflict.dailyRate,
+        flag:      conflict.flag,
+      }
     );
-  }, [markers]);
+  };
 
-  if (!markers.length) return null;
-
-  const shortName = (n) => n.replace(/ —.*/, '').replace(/\s*–.*/, '').replace(/ \(.*/, '');
+  const shortName = n => n.replace(/ —.*/, '').replace(/\s*–.*/, '').replace(/ \(.*/, '');
   const nf = new Intl.NumberFormat('en-US');
 
   return (
-    <div className="flex flex-col items-center py-2">
+    <div className="flex flex-col">
       <div
-        className="relative cursor-crosshair"
-        style={{ width: GLOBE_SIZE, height: GLOBE_SIZE }}
-        onClick={handleClick}
+        ref={containerRef}
+        className="relative w-full border border-zinc-800 bg-zinc-950 overflow-hidden"
+        onClick={e => {
+          if (e.target.tagName === 'svg' || e.target === containerRef.current) setPanel(null);
+        }}
       >
-        {/* Red ambient glow */}
-        <div
-          className="absolute inset-0 pointer-events-none"
-          style={{
-            background:
-              'radial-gradient(circle at 50% 55%, rgba(220,38,38,0.14) 0%, transparent 65%)',
-          }}
-        />
-        <canvas
-          ref={canvasRef}
-          style={{
-            width:   GLOBE_SIZE,
-            height:  GLOBE_SIZE,
-            opacity: loaded ? 1 : 0,
-            transition: 'opacity 1s ease',
-          }}
-        />
+        <ComposableMap
+          projection="geoNaturalEarth1"
+          projectionConfig={{ scale: 153, center: [15, 10] }}
+          style={{ width: '100%', height: 'auto' }}
+        >
+          <Geographies geography={GEO_URL}>
+            {({ geographies }) =>
+              geographies.map(geo => {
+                const conflict  = conflictByGeoId[String(geo.id)];
+                const isConflict = !!conflict;
+                const isSelected = panel?.name === conflict?.name;
 
-        {/* Click panel — anchored to marker position */}
+                return (
+                  <Geography
+                    key={geo.rsmKey}
+                    geography={geo}
+                    onClick={e => handleGeoClick(geo, e)}
+                    style={{
+                      default: {
+                        fill:        isSelected  ? 'rgba(220,38,38,0.85)'
+                                   : isConflict  ? 'rgba(220,38,38,0.45)'
+                                   : '#111113',
+                        stroke:      isConflict  ? '#dc2626' : '#27272a',
+                        strokeWidth: isConflict  ? 0.6 : 0.25,
+                        outline:     'none',
+                        cursor:      isConflict  ? 'pointer' : 'default',
+                        transition:  'fill 0.15s ease',
+                      },
+                      hover: {
+                        fill:        isConflict  ? 'rgba(220,38,38,0.65)' : '#1c1c1f',
+                        stroke:      isConflict  ? '#ef4444' : '#3f3f46',
+                        strokeWidth: isConflict  ? 0.7 : 0.25,
+                        outline:     'none',
+                        cursor:      isConflict  ? 'pointer' : 'default',
+                      },
+                      pressed: {
+                        fill:    isConflict ? 'rgba(220,38,38,0.9)' : '#1c1c1f',
+                        outline: 'none',
+                      },
+                    }}
+                  />
+                );
+              })
+            }
+          </Geographies>
+        </ComposableMap>
+
+        {/* Click panel — anchored at click position */}
         {panel && (
           <div
-            className="absolute z-10"
-            style={{
-              left:      panel.x,
-              top:       panel.y,
-              transform: 'translate(-50%, -115%)',
-            }}
+            className="absolute z-10 pointer-events-none"
+            style={{ left: panel.x, top: panel.y, transform: 'translate(-50%, -115%)' }}
           >
             <div
-              className="bg-zinc-950 border border-zinc-700 w-48"
-              style={{ boxShadow: '0 0 20px rgba(220,38,38,0.3), 0 4px 16px rgba(0,0,0,0.6)' }}
+              className="bg-zinc-950 border border-zinc-700 w-48 pointer-events-auto"
+              style={{ boxShadow: '0 0 20px rgba(220,38,38,0.3), 0 4px 16px rgba(0,0,0,0.7)' }}
             >
-              {/* Header */}
               <div className="flex items-center justify-between px-3 py-2 border-b border-zinc-800">
                 <div className="flex items-center gap-1.5 min-w-0">
                   {panel.flag && <span className="text-sm leading-none flex-shrink-0">{panel.flag}</span>}
@@ -420,15 +339,13 @@ function BreakdownGlobe({ conflicts }) {
                 </div>
                 <button
                   className="text-zinc-600 hover:text-zinc-300 transition-colors flex-shrink-0 ml-1"
-                  onClick={(e) => { e.stopPropagation(); setPanel(null); }}
+                  onClick={e => { e.stopPropagation(); setPanel(null); }}
                 >
-                  <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor">
-                    <path d="M1 1l8 8M9 1L1 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+                    <path d="M1 1l8 8M9 1L1 9"/>
                   </svg>
                 </button>
               </div>
-
-              {/* Data rows */}
               <div className="px-3 py-2 space-y-2">
                 {panel.region && (
                   <div className="flex justify-between items-baseline">
@@ -458,7 +375,6 @@ function BreakdownGlobe({ conflicts }) {
                 )}
               </div>
             </div>
-            {/* Downward arrow */}
             <div
               className="bg-zinc-950 border-r border-b border-zinc-700 rotate-45"
               style={{ width: 7, height: 7, marginLeft: 'calc(50% - 4px)', marginTop: -4 }}
@@ -466,8 +382,8 @@ function BreakdownGlobe({ conflicts }) {
           </div>
         )}
       </div>
-      <p className="text-[9px] font-mono uppercase tracking-[0.25em] text-zinc-700 mt-1">
-        Click a marker for details · dot size = relative death toll
+      <p className="text-[9px] font-mono uppercase tracking-[0.25em] text-zinc-700 mt-2 text-center">
+        Click a highlighted country for details
       </p>
     </div>
   );
@@ -753,7 +669,7 @@ export default function CounterPage() {
                 </h3>
                 <span className="text-[9px] font-mono text-zinc-700">sorted by death toll</span>
               </div>
-              <BreakdownGlobe conflicts={sortedConflicts} />
+              <BreakdownMap conflicts={sortedConflicts} />
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                 {sortedConflicts.map(conflict => (
                   <ConflictCard key={conflict.id} conflict={conflict} maxDeaths={maxDeaths} />
