@@ -289,29 +289,22 @@ function BreakdownMap({ conflicts }) {
                   <Geography
                     key={geo.rsmKey}
                     geography={geo}
+                    fill={
+                      isSelected  ? '#dc2626'
+                      : isConflict  ? 'rgba(220,38,38,0.45)'
+                      : '#1e2535'
+                    }
+                    stroke={isConflict ? '#dc2626' : '#151b27'}
+                    strokeWidth={isConflict ? 0.6 : 0.4}
                     onClick={e => handleGeoClick(geo, e)}
                     style={{
-                      default: {
-                        fill:        isSelected  ? 'rgba(220,38,38,0.85)'
-                                   : isConflict  ? 'rgba(220,38,38,0.45)'
-                                   : '#2a2d35',
-                        stroke:      isConflict  ? '#dc2626' : '#1a1c22',
-                        strokeWidth: isConflict  ? 0.6 : 0.4,
-                        outline:     'none',
-                        cursor:      isConflict  ? 'pointer' : 'default',
-                        transition:  'fill 0.15s ease',
-                      },
-                      hover: {
-                        fill:        isConflict  ? 'rgba(220,38,38,0.65)' : '#353840',
-                        stroke:      isConflict  ? '#ef4444' : '#1a1c22',
-                        strokeWidth: isConflict  ? 0.7 : 0.4,
-                        outline:     'none',
-                        cursor:      isConflict  ? 'pointer' : 'default',
-                      },
-                      pressed: {
-                        fill:    isConflict ? 'rgba(220,38,38,0.9)' : '#353840',
+                      default: { outline: 'none', cursor: isConflict ? 'pointer' : 'default' },
+                      hover:   {
+                        fill:    isConflict ? 'rgba(220,38,38,0.65)' : '#263047',
                         outline: 'none',
+                        cursor:  isConflict ? 'pointer' : 'default',
                       },
+                      pressed: { outline: 'none' },
                     }}
                   />
                 );
