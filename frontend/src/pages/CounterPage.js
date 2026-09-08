@@ -289,17 +289,17 @@ function BreakdownMap({ conflicts }) {
                   <Geography
                     key={geo.rsmKey}
                     geography={geo}
-                    fill={
-                      isSelected  ? '#dc2626'
-                      : isConflict  ? 'rgba(220,38,38,0.45)'
-                      : '#1e2535'
-                    }
-                    stroke={isConflict ? '#dc2626' : '#151b27'}
-                    strokeWidth={isConflict ? 0.6 : 0.4}
                     onClick={isConflict ? e => handleGeoClick(geo, e) : undefined}
                     style={{
-                      default: { outline: 'none', cursor: isConflict ? 'pointer' : 'default', pointerEvents: isConflict ? 'auto' : 'none' },
-                      hover:   {
+                      default: {
+                        fill:        isSelected ? '#dc2626' : isConflict ? 'rgba(220,38,38,0.45)' : '#1e2535',
+                        stroke:      isConflict ? '#dc2626' : '#151b27',
+                        strokeWidth: isConflict ? 0.6 : 0.4,
+                        outline:     'none',
+                        cursor:      isConflict ? 'pointer' : 'default',
+                        pointerEvents: isConflict ? 'auto' : 'none',
+                      },
+                      hover: {
                         fill:    isConflict ? 'rgba(220,38,38,0.65)' : '#1e2535',
                         outline: 'none',
                         cursor:  isConflict ? 'pointer' : 'default',
