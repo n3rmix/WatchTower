@@ -271,9 +271,9 @@ function BreakdownGlobe({ conflicts }) {
   const phiRef    = useRef(0);
   const frameRef  = useRef(0);
   const [loaded,  setLoaded]  = useState(false);
-  const [tooltip, setTooltip] = useState(null); // { x, y, name, deaths }
+  const [panel,   setPanel]   = useState(null); // { x, y, name, region, deaths, dailyRate, flag }
 
-  // sqrt scaling so mid-tier conflicts stay visible; name + deaths kept for tooltip
+  // sqrt scaling; carry full summary data for the click panel
   const markers = useMemo(() => {
     if (!conflicts.length) return [];
     const maxDeaths = Math.max(...conflicts.map(c => c.currentDeaths), 1);
@@ -281,9 +281,17 @@ function BreakdownGlobe({ conflicts }) {
       .map(c => {
         const loc = getCoords(c.name);
         if (!loc) return null;
-        const ratio = Math.sqrt(c.currentDeaths / maxDeaths); // sqrt compress range
+        const ratio = Math.sqrt(c.currentDeaths / maxDeaths);
         const size  = 0.04 + 0.11 * ratio;
-        return { location: loc, size, name: c.name, deaths: c.currentDeaths };
+        return {
+          location:  loc,
+          size,
+          name:      c.name,
+          region:    c.region,
+          deaths:    c.currentDeaths,
+          dailyRate: c.dailyRate,
+          flag:      c.flag,
+        };
       })
       .filter(Boolean);
   }, [conflicts]);
@@ -327,8 +335,8 @@ function BreakdownGlobe({ conflicts }) {
     };
   }, [markers]);
 
-  // Hit-test markers against mouse position using the live phi from the ref
-  const handleMouseMove = useCallback((e) => {
+  // Click: hit-test visible markers; toggle panel or dismiss on empty click
+  const handleClick = useCallback((e) => {
     const canvas = canvasRef.current;
     if (!canvas || !markers.length) return;
     const rect = canvas.getBoundingClientRect();
@@ -336,7 +344,7 @@ function BreakdownGlobe({ conflicts }) {
     const my = e.clientY - rect.top;
 
     let closest = null;
-    let minDist  = 26; // pixel hit-radius
+    let minDist  = 30; // pixel hit-radius
 
     for (const m of markers) {
       const { sx, sy, visible } = projectToScreen(
@@ -347,21 +355,28 @@ function BreakdownGlobe({ conflicts }) {
       if (dist < minDist) { minDist = dist; closest = { sx, sy, ...m }; }
     }
 
-    setTooltip(closest
-      ? { x: closest.sx, y: closest.sy, name: closest.name, deaths: closest.deaths }
-      : null
+    if (!closest) { setPanel(null); return; }
+
+    // Toggle off if same marker clicked again
+    setPanel(prev =>
+      prev?.name === closest.name
+        ? null
+        : { x: closest.sx, y: closest.sy, name: closest.name, region: closest.region,
+            deaths: closest.deaths, dailyRate: closest.dailyRate, flag: closest.flag }
     );
   }, [markers]);
 
   if (!markers.length) return null;
 
+  const shortName = (n) => n.replace(/ —.*/, '').replace(/\s*–.*/, '').replace(/ \(.*/, '');
+  const nf = new Intl.NumberFormat('en-US');
+
   return (
     <div className="flex flex-col items-center py-2">
       <div
-        className="relative"
+        className="relative cursor-crosshair"
         style={{ width: GLOBE_SIZE, height: GLOBE_SIZE }}
-        onMouseMove={handleMouseMove}
-        onMouseLeave={() => setTooltip(null)}
+        onClick={handleClick}
       >
         {/* Red ambient glow */}
         <div
@@ -381,37 +396,78 @@ function BreakdownGlobe({ conflicts }) {
           }}
         />
 
-        {/* Hover tooltip */}
-        {tooltip && (
+        {/* Click panel — anchored to marker position */}
+        {panel && (
           <div
-            className="absolute pointer-events-none z-10"
+            className="absolute z-10"
             style={{
-              left:      tooltip.x,
-              top:       tooltip.y,
+              left:      panel.x,
+              top:       panel.y,
               transform: 'translate(-50%, -115%)',
             }}
           >
             <div
-              className="bg-zinc-900 border border-zinc-700 px-2.5 py-1.5 whitespace-nowrap"
-              style={{ boxShadow: '0 0 14px rgba(220,38,38,0.25)' }}
+              className="bg-zinc-950 border border-zinc-700 w-48"
+              style={{ boxShadow: '0 0 20px rgba(220,38,38,0.3), 0 4px 16px rgba(0,0,0,0.6)' }}
             >
-              <p className="text-[10px] font-mono font-bold text-zinc-100 uppercase tracking-wider leading-tight">
-                {tooltip.name.replace(/ —.*/, '').replace(/–.*/, '').replace(/ \(.*/, '')}
-              </p>
-              <p className="text-[9px] font-mono text-red-400 tabular-nums mt-0.5">
-                {new Intl.NumberFormat('en-US').format(Math.round(tooltip.deaths))} est. deaths
-              </p>
+              {/* Header */}
+              <div className="flex items-center justify-between px-3 py-2 border-b border-zinc-800">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  {panel.flag && <span className="text-sm leading-none flex-shrink-0">{panel.flag}</span>}
+                  <p className="text-[10px] font-mono font-bold text-zinc-100 uppercase tracking-wider truncate">
+                    {shortName(panel.name)}
+                  </p>
+                </div>
+                <button
+                  className="text-zinc-600 hover:text-zinc-300 transition-colors flex-shrink-0 ml-1"
+                  onClick={(e) => { e.stopPropagation(); setPanel(null); }}
+                >
+                  <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor">
+                    <path d="M1 1l8 8M9 1L1 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                  </svg>
+                </button>
+              </div>
+
+              {/* Data rows */}
+              <div className="px-3 py-2 space-y-2">
+                {panel.region && (
+                  <div className="flex justify-between items-baseline">
+                    <span className="text-[9px] font-mono text-zinc-600 uppercase tracking-wider">Region</span>
+                    <span className="text-[9px] font-mono text-zinc-400">{panel.region}</span>
+                  </div>
+                )}
+                <div className="flex justify-between items-baseline">
+                  <span className="text-[9px] font-mono text-zinc-600 uppercase tracking-wider">Est. Deaths</span>
+                  <span className="text-[10px] font-mono font-bold text-red-400 tabular-nums">
+                    {nf.format(Math.round(panel.deaths))}
+                  </span>
+                </div>
+                {panel.dailyRate > 0 && (
+                  <div className="flex justify-between items-baseline">
+                    <span className="text-[9px] font-mono text-zinc-600 uppercase tracking-wider">Per Day</span>
+                    <span className="text-[9px] font-mono text-zinc-400 tabular-nums">
+                      ~{panel.dailyRate.toFixed(1)}
+                    </span>
+                  </div>
+                )}
+                {panel.dailyRate === 0 && (
+                  <div className="flex justify-between items-baseline">
+                    <span className="text-[9px] font-mono text-zinc-600 uppercase tracking-wider">Status</span>
+                    <span className="text-[9px] font-mono text-zinc-600 uppercase tracking-wider">Ended</span>
+                  </div>
+                )}
+              </div>
             </div>
             {/* Downward arrow */}
             <div
-              className="bg-zinc-900 border-r border-b border-zinc-700 rotate-45"
+              className="bg-zinc-950 border-r border-b border-zinc-700 rotate-45"
               style={{ width: 7, height: 7, marginLeft: 'calc(50% - 4px)', marginTop: -4 }}
             />
           </div>
         )}
       </div>
       <p className="text-[9px] font-mono uppercase tracking-[0.25em] text-zinc-700 mt-1">
-        Geographic distribution · dot size = relative death toll
+        Click a marker for details · dot size = relative death toll
       </p>
     </div>
   );
