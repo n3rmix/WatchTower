@@ -294,22 +294,22 @@ function BreakdownMap({ conflicts }) {
                       default: {
                         fill:        isSelected  ? 'rgba(220,38,38,0.85)'
                                    : isConflict  ? 'rgba(220,38,38,0.45)'
-                                   : '#111113',
-                        stroke:      isConflict  ? '#dc2626' : '#27272a',
-                        strokeWidth: isConflict  ? 0.6 : 0.25,
+                                   : '#2a2d35',
+                        stroke:      isConflict  ? '#dc2626' : '#1a1c22',
+                        strokeWidth: isConflict  ? 0.6 : 0.4,
                         outline:     'none',
                         cursor:      isConflict  ? 'pointer' : 'default',
                         transition:  'fill 0.15s ease',
                       },
                       hover: {
-                        fill:        isConflict  ? 'rgba(220,38,38,0.65)' : '#1c1c1f',
-                        stroke:      isConflict  ? '#ef4444' : '#3f3f46',
-                        strokeWidth: isConflict  ? 0.7 : 0.25,
+                        fill:        isConflict  ? 'rgba(220,38,38,0.65)' : '#353840',
+                        stroke:      isConflict  ? '#ef4444' : '#1a1c22',
+                        strokeWidth: isConflict  ? 0.7 : 0.4,
                         outline:     'none',
                         cursor:      isConflict  ? 'pointer' : 'default',
                       },
                       pressed: {
-                        fill:    isConflict ? 'rgba(220,38,38,0.9)' : '#1c1c1f',
+                        fill:    isConflict ? 'rgba(220,38,38,0.9)' : '#353840',
                         outline: 'none',
                       },
                     }}
