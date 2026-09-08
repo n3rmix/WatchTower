@@ -296,11 +296,11 @@ function BreakdownMap({ conflicts }) {
                     }
                     stroke={isConflict ? '#dc2626' : '#151b27'}
                     strokeWidth={isConflict ? 0.6 : 0.4}
-                    onClick={e => handleGeoClick(geo, e)}
+                    onClick={isConflict ? e => handleGeoClick(geo, e) : undefined}
                     style={{
-                      default: { outline: 'none', cursor: isConflict ? 'pointer' : 'default' },
+                      default: { outline: 'none', cursor: isConflict ? 'pointer' : 'default', pointerEvents: isConflict ? 'auto' : 'none' },
                       hover:   {
-                        fill:    isConflict ? 'rgba(220,38,38,0.65)' : '#263047',
+                        fill:    isConflict ? 'rgba(220,38,38,0.65)' : '#1e2535',
                         outline: 'none',
                         cursor:  isConflict ? 'pointer' : 'default',
                       },
