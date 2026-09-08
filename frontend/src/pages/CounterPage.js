@@ -232,14 +232,48 @@ function getCoords(name) {
   return null;
 }
 
+const GLOBE_SIZE  = 380;
+const GLOBE_THETA = 0.28;
+
+/** Project a lat/lon marker to canvas pixel coordinates given current phi. */
+function projectToScreen(lat, lon, phi) {
+  const latR = (lat * Math.PI) / 180;
+  const lonR = (lon * Math.PI) / 180;
+
+  // Spherical → Cartesian
+  const x = Math.cos(latR) * Math.sin(lonR);
+  const y = Math.sin(latR);
+  const z = Math.cos(latR) * Math.cos(lonR);
+
+  // Rotate around Y by phi (horizontal spin)
+  const cosPhi = Math.cos(phi);
+  const sinPhi = Math.sin(phi);
+  const rx  =  x * cosPhi + z * sinPhi;
+  const rz  = -x * sinPhi + z * cosPhi;
+
+  // Rotate around X by theta (tilt)
+  const cosT = Math.cos(GLOBE_THETA);
+  const sinT = Math.sin(GLOBE_THETA);
+  const ry2  = y * cosT - rz * sinT;
+  const rz2  = y * sinT + rz * cosT;
+
+  return {
+    sx:      (rx  + 1) / 2 * GLOBE_SIZE,
+    sy:      (1 - ry2) / 2 * GLOBE_SIZE,
+    visible: rz2 > 0,                   // facing viewer
+  };
+}
+
 function BreakdownGlobe({ conflicts }) {
   const canvasRef = useRef(null);
   const globeRef  = useRef(null);
   const rafRef    = useRef(null);
   const phiRef    = useRef(0);
   const frameRef  = useRef(0);
-  const [loaded, setLoaded] = useState(false);
+  const [loaded,  setLoaded]  = useState(false);
+  const [tooltip, setTooltip] = useState(null); // { x, y, name, deaths }
 
+  // sqrt scaling so mid-tier conflicts stay visible; name + deaths kept for tooltip
   const markers = useMemo(() => {
     if (!conflicts.length) return [];
     const maxDeaths = Math.max(...conflicts.map(c => c.currentDeaths), 1);
@@ -247,8 +281,9 @@ function BreakdownGlobe({ conflicts }) {
       .map(c => {
         const loc = getCoords(c.name);
         if (!loc) return null;
-        const size = 0.055 + 0.075 * (c.currentDeaths / maxDeaths);
-        return { location: loc, size };
+        const ratio = Math.sqrt(c.currentDeaths / maxDeaths); // sqrt compress range
+        const size  = 0.04 + 0.11 * ratio;
+        return { location: loc, size, name: c.name, deaths: c.currentDeaths };
       })
       .filter(Boolean);
   }, [conflicts]);
@@ -257,16 +292,15 @@ function BreakdownGlobe({ conflicts }) {
     const canvas = canvasRef.current;
     if (!canvas || !markers.length) return;
 
-    const SIZE = 380;
     globeRef.current = createGlobe(canvas, {
       devicePixelRatio: 2,
-      width:  SIZE * 2,
-      height: SIZE * 2,
-      phi:    0,
-      theta:  0.28,
-      dark:   1,
-      diffuse: 1.1,
-      mapSamples:   16000,
+      width:         GLOBE_SIZE * 2,
+      height:        GLOBE_SIZE * 2,
+      phi:           0,
+      theta:         GLOBE_THETA,
+      dark:          1,
+      diffuse:       1.1,
+      mapSamples:    16000,
       mapBrightness: 4,
       baseColor:   [0.05, 0.05, 0.08],
       markerColor: [1, 0.18, 0.18],
@@ -281,7 +315,7 @@ function BreakdownGlobe({ conflicts }) {
       const pulse = 1 + 0.3 * Math.sin(frameRef.current * 0.05);
       globeRef.current?.update({
         phi: phiRef.current,
-        markers: markers.map(m => ({ ...m, size: m.size * pulse })),
+        markers: markers.map(m => ({ location: m.location, size: m.size * pulse })),
       });
       rafRef.current = requestAnimationFrame(animate);
     }
@@ -293,11 +327,42 @@ function BreakdownGlobe({ conflicts }) {
     };
   }, [markers]);
 
+  // Hit-test markers against mouse position using the live phi from the ref
+  const handleMouseMove = useCallback((e) => {
+    const canvas = canvasRef.current;
+    if (!canvas || !markers.length) return;
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+
+    let closest = null;
+    let minDist  = 26; // pixel hit-radius
+
+    for (const m of markers) {
+      const { sx, sy, visible } = projectToScreen(
+        m.location[0], m.location[1], phiRef.current
+      );
+      if (!visible) continue;
+      const dist = Math.hypot(sx - mx, sy - my);
+      if (dist < minDist) { minDist = dist; closest = { sx, sy, ...m }; }
+    }
+
+    setTooltip(closest
+      ? { x: closest.sx, y: closest.sy, name: closest.name, deaths: closest.deaths }
+      : null
+    );
+  }, [markers]);
+
   if (!markers.length) return null;
 
   return (
     <div className="flex flex-col items-center py-2">
-      <div className="relative" style={{ width: 380, height: 380 }}>
+      <div
+        className="relative"
+        style={{ width: GLOBE_SIZE, height: GLOBE_SIZE }}
+        onMouseMove={handleMouseMove}
+        onMouseLeave={() => setTooltip(null)}
+      >
         {/* Red ambient glow */}
         <div
           className="absolute inset-0 pointer-events-none"
@@ -309,15 +374,44 @@ function BreakdownGlobe({ conflicts }) {
         <canvas
           ref={canvasRef}
           style={{
-            width:   380,
-            height:  380,
+            width:   GLOBE_SIZE,
+            height:  GLOBE_SIZE,
             opacity: loaded ? 1 : 0,
             transition: 'opacity 1s ease',
           }}
         />
+
+        {/* Hover tooltip */}
+        {tooltip && (
+          <div
+            className="absolute pointer-events-none z-10"
+            style={{
+              left:      tooltip.x,
+              top:       tooltip.y,
+              transform: 'translate(-50%, -115%)',
+            }}
+          >
+            <div
+              className="bg-zinc-900 border border-zinc-700 px-2.5 py-1.5 whitespace-nowrap"
+              style={{ boxShadow: '0 0 14px rgba(220,38,38,0.25)' }}
+            >
+              <p className="text-[10px] font-mono font-bold text-zinc-100 uppercase tracking-wider leading-tight">
+                {tooltip.name.replace(/ —.*/, '').replace(/–.*/, '').replace(/ \(.*/, '')}
+              </p>
+              <p className="text-[9px] font-mono text-red-400 tabular-nums mt-0.5">
+                {new Intl.NumberFormat('en-US').format(Math.round(tooltip.deaths))} est. deaths
+              </p>
+            </div>
+            {/* Downward arrow */}
+            <div
+              className="bg-zinc-900 border-r border-b border-zinc-700 rotate-45"
+              style={{ width: 7, height: 7, marginLeft: 'calc(50% - 4px)', marginTop: -4 }}
+            />
+          </div>
+        )}
       </div>
       <p className="text-[9px] font-mono uppercase tracking-[0.25em] text-zinc-700 mt-1">
-        Geographic distribution · marker size = relative death toll
+        Geographic distribution · dot size = relative death toll
       </p>
     </div>
   );
