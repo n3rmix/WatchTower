@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import axios from 'axios';
+import createGlobe from 'cobe';
 import Header from '../components/Header';
 import GdeltAlertTicker from '../components/GdeltAlertTicker';
 
@@ -189,6 +190,135 @@ function ChildrenBreakdown({ conflicts }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// ─── BREAKDOWN GLOBE ──────────────────────────────────────────────────────────
+
+const CONFLICT_COORDS = {
+  ukraine:     [49.0,  31.0],
+  russia:      [61.5, 105.3],
+  gaza:        [31.5,  34.5],
+  palestine:   [31.5,  34.5],
+  israel:      [31.5,  34.8],
+  sudan:       [15.5,  32.5],
+  myanmar:     [17.0,  96.0],
+  syria:       [35.0,  38.0],
+  yemen:       [15.5,  48.0],
+  ethiopia:    [ 9.0,  40.0],
+  drc:         [-4.0,  21.5],
+  congo:       [-4.0,  21.5],
+  iran:        [32.0,  53.0],
+  lebanon:     [33.9,  35.5],
+  haiti:       [18.9, -72.3],
+  somalia:     [ 2.0,  45.3],
+  mali:        [17.5,  -4.0],
+  sahel:       [15.0,   0.0],
+  nigeria:     [ 9.0,   8.7],
+  afghanistan: [33.9,  67.7],
+  iraq:        [33.2,  43.7],
+  libya:       [26.3,  17.2],
+  cameroon:    [ 7.4,  12.4],
+  mozambique:  [-18.7, 35.5],
+  somalia:     [  2.0, 45.3],
+};
+
+function getCoords(name) {
+  const lower = name.toLowerCase();
+  for (const [key, coords] of Object.entries(CONFLICT_COORDS)) {
+    if (lower.includes(key)) return coords;
+  }
+  return null;
+}
+
+function BreakdownGlobe({ conflicts }) {
+  const canvasRef = useRef(null);
+  const globeRef  = useRef(null);
+  const rafRef    = useRef(null);
+  const phiRef    = useRef(0);
+  const frameRef  = useRef(0);
+  const [loaded, setLoaded] = useState(false);
+
+  const markers = useMemo(() => {
+    if (!conflicts.length) return [];
+    const maxDeaths = Math.max(...conflicts.map(c => c.currentDeaths), 1);
+    return conflicts
+      .map(c => {
+        const loc = getCoords(c.name);
+        if (!loc) return null;
+        const size = 0.055 + 0.075 * (c.currentDeaths / maxDeaths);
+        return { location: loc, size };
+      })
+      .filter(Boolean);
+  }, [conflicts]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !markers.length) return;
+
+    const SIZE = 380;
+    globeRef.current = createGlobe(canvas, {
+      devicePixelRatio: 2,
+      width:  SIZE * 2,
+      height: SIZE * 2,
+      phi:    0,
+      theta:  0.28,
+      dark:   1,
+      diffuse: 1.1,
+      mapSamples:   16000,
+      mapBrightness: 4,
+      baseColor:   [0.05, 0.05, 0.08],
+      markerColor: [1, 0.18, 0.18],
+      glowColor:   [0.5, 0.05, 0.05],
+      markers,
+    });
+    setLoaded(true);
+
+    function animate() {
+      frameRef.current += 1;
+      phiRef.current   += 0.002;
+      const pulse = 1 + 0.3 * Math.sin(frameRef.current * 0.05);
+      globeRef.current?.update({
+        phi: phiRef.current,
+        markers: markers.map(m => ({ ...m, size: m.size * pulse })),
+      });
+      rafRef.current = requestAnimationFrame(animate);
+    }
+    rafRef.current = requestAnimationFrame(animate);
+
+    return () => {
+      cancelAnimationFrame(rafRef.current);
+      globeRef.current?.destroy();
+    };
+  }, [markers]);
+
+  if (!markers.length) return null;
+
+  return (
+    <div className="flex flex-col items-center py-2">
+      <div className="relative" style={{ width: 380, height: 380 }}>
+        {/* Red ambient glow */}
+        <div
+          className="absolute inset-0 pointer-events-none"
+          style={{
+            background:
+              'radial-gradient(circle at 50% 55%, rgba(220,38,38,0.14) 0%, transparent 65%)',
+          }}
+        />
+        <canvas
+          ref={canvasRef}
+          style={{
+            width:   380,
+            height:  380,
+            opacity: loaded ? 1 : 0,
+            transition: 'opacity 1s ease',
+          }}
+        />
+      </div>
+      <p className="text-[9px] font-mono uppercase tracking-[0.25em] text-zinc-700 mt-1">
+        Geographic distribution · marker size = relative death toll
+      </p>
     </div>
   );
 }
@@ -473,6 +603,7 @@ export default function CounterPage() {
                 </h3>
                 <span className="text-[9px] font-mono text-zinc-700">sorted by death toll</span>
               </div>
+              <BreakdownGlobe conflicts={sortedConflicts} />
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                 {sortedConflicts.map(conflict => (
                   <ConflictCard key={conflict.id} conflict={conflict} maxDeaths={maxDeaths} />
